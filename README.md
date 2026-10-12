@@ -168,7 +168,7 @@ pyinstaller build.spec --noconfirm
 
 本项目在 AI 辅助编程下完成，底层实现参考了多个优秀开源项目。在此对以下前辈及开源贡献者表示最诚挚的感谢：
 
-- **[cancelGuMu/webot](https://github.com/cancelGuMu/webot)** · **[hicccc77/WeFlow](https://github.com/hicccc77/WeFlow)** · **[jackwener/wx-cli](https://github.com/jackwener/wx-cli)** · **[ylytdeng/wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt)** — 为本项目的框架和底层实现提供了思路和指导。
+- **[LifeArchiveProject/WeChatDataAnalysis]([https://github.com/cancelGuMu/webot](https://github.com/LifeArchiveProject/WeChatDataAnalysis))** · **[cancelGuMu/webot](https://github.com/cancelGuMu/webot)** · **[hicccc77/WeFlow](https://github.com/hicccc77/WeFlow)** · **[jackwener/wx-cli](https://github.com/jackwener/wx-cli)** · **[ylytdeng/wechat-decrypt](https://github.com/ylytdeng/wechat-decrypt)** — 为本项目的框架和底层实现提供了思路和指导。
 
 正是你们，让我的想法得以实现，让这一切成为可能，再次感谢。
 
