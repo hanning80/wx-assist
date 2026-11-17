@@ -159,7 +159,16 @@ export default function JournalCloudSection() {
           ]).filter((p) => p.value !== 'weiyun').map((p) => (
             <button
               key={p.value}
-              onClick={() => { setProvider(p.value); setMsg(null) }}
+              onClick={() => {
+                if (p.value !== (info?.provider || provider)) {
+                  if (!window.confirm(
+                    '切到「' + p.label + '」并保存后，旧云仓「' + (info?.provider_name || providerLabel) +
+                    '」根目录下的数据会被全部清空，只保留这一边。确定切换吗？'
+                  )) return
+                }
+                setProvider(p.value)
+                setMsg(null)
+              }}
               className={'px-3 py-1.5 text-xs rounded-lg border ' + (
                 provider === p.value
                   ? 'border-brand-green bg-brand-green/10 text-brand-green'
@@ -171,7 +180,8 @@ export default function JournalCloudSection() {
           ))}
         </div>
         <p className="text-[11px] text-text-sub leading-relaxed mt-2">
-          切换后只改本机 <code>.env</code> 的 <code>CLOUD_PROVIDER</code>，上层读写逻辑完全不变；两边的桶各存各的，不会自动互相迁移。
+          同一时间只用一家云仓：切换到另一家并保存后，旧云仓根目录下的对象会被<b className="text-text-main">全部清空</b>，
+          一份数据只留一边，不会两边各存一份、各付一份费用。
         </p>
       </div>
 
@@ -413,7 +423,8 @@ export default function JournalCloudSection() {
       </div>
 
       <p className="text-[11px] text-text-sub leading-relaxed">
-        说明：访问密钥只存在本机 <code>.env</code>，不会写进日志或网页；页面只显示尾号。私有桶不能匿名访问，程序取文件时用一小时有效的签名地址。切换厂商只改 <code>CLOUD_PROVIDER</code>，旧仓数据不会自动搬过去；需要换仓时先用恢复工具从旧仓导出。
+        说明：访问密钥只存在本机 <code>.env</code>，不会写进日志或网页；页面只显示尾号。私有桶不能匿名访问，程序取文件时用一小时有效的签名地址。
+        同一时间只允许一家云仓生效；切换并保存时，旧云仓的数据会被清空，只在新云仓保留一份。
       </p>
     </div>
   )

@@ -2697,7 +2697,18 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     client = CosClient(sid, skey, region, bucket, prefix)
                     listed = list_bucket_objects(client, prefix=prefix, limit=5)
                     put_selftest(client)
+                    purged = None
                     if not test_only:
+                        # 项目约定：同一时间只允许一家云仓，切过来就把旧仓清空
+                        try:
+                            from src.journal.cloud.provider import provider_name, purge_provider
+                            old_name = provider_name()
+                            if old_name and old_name != "cos":
+                                purged = purge_provider(old_name)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("切换 COS 时清空旧仓失败: %s", exc)
+                            purged = {"provider": "", "deleted": 0,
+                                      "failed": [{"key": "", "error": "清空旧仓失败：" + str(exc)[:160]}]}
                         updates = {
                             "CLOUD_PROVIDER": "cos",
                             "COS_BUCKET": bucket,
@@ -2721,10 +2732,17 @@ class _UIHandler(SimpleHTTPRequestHandler):
                                 purge_media_index()
                             except Exception as e:  # noqa: BLE001
                                 logger.warning("关闭媒体检索后清理旧索引失败: %s", e)
+                    extra = ""
+                    if purged:
+                        label = {"oss": "阿里云 OSS", "cos": "腾讯云 COS", "weiyun": "腾讯微云"}
+                        old_label = label.get(purged.get("provider") or "", purged.get("provider") or "旧云仓")
+                        extra = "；已清空旧云仓（%s）%d 个对象" % (old_label, int(purged.get("deleted") or 0))
+                        if purged.get("failed"):
+                            extra += "，%d 个没删掉" % len(purged.get("failed") or [])
                     self.send_json({
                         "ok": True,
                         "provider": "cos",
-                        "message": "COS 连接成功，已能列举并写入存储桶" + ("（测试模式，未保存）" if test_only else "，配置已保存"),
+                        "message": "COS 连接成功，已能列举并写入存储桶" + ("（测试模式，未保存）" if test_only else "，配置已保存") + extra,
                         "bucket": bucket,
                         "region": region,
                         "prefix": prefix,
@@ -2755,7 +2773,18 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     # 1) 列举；2) 写一个 2 字节对象再删掉，确认有写权限。
                     listed = list_bucket_objects(client, prefix=prefix, limit=5)
                     put_selftest(client)
+                    purged = None
                     if not test_only:
+                        # 项目约定：同一时间只允许一家云仓，切过来就把旧仓清空
+                        try:
+                            from src.journal.cloud.provider import provider_name, purge_provider
+                            old_name = provider_name()
+                            if old_name and old_name != "oss":
+                                purged = purge_provider(old_name)
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning("切换 OSS 时清空旧仓失败: %s", exc)
+                            purged = {"provider": "", "deleted": 0,
+                                      "failed": [{"key": "", "error": "清空旧仓失败：" + str(exc)[:160]}]}
                         updates = {
                             "CLOUD_PROVIDER": "oss",
                             "OSS_ENABLED": "1",
@@ -2781,10 +2810,17 @@ class _UIHandler(SimpleHTTPRequestHandler):
                                 purge_media_index()
                             except Exception as e:  # noqa: BLE001
                                 logger.warning("关闭媒体检索后清理旧索引失败: %s", e)
+                    extra = ""
+                    if purged:
+                        label = {"oss": "阿里云 OSS", "cos": "腾讯云 COS", "weiyun": "腾讯微云"}
+                        old_label = label.get(purged.get("provider") or "", purged.get("provider") or "旧云仓")
+                        extra = "；已清空旧云仓（%s）%d 个对象" % (old_label, int(purged.get("deleted") or 0))
+                        if purged.get("failed"):
+                            extra += "，%d 个没删掉" % len(purged.get("failed") or [])
                     self.send_json({
                         "ok": True,
                         "provider": "oss",
-                        "message": "OSS 连接成功，已能列举并写入私有桶" + ("（测试模式，未保存）" if test_only else "，配置已保存"),
+                        "message": "OSS 连接成功，已能列举并写入私有桶" + ("（测试模式，未保存）" if test_only else "，配置已保存") + extra,
                         "bucket": bucket,
                         "endpoint": endpoint,
                         "prefix": prefix,

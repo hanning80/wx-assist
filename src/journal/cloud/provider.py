@@ -97,6 +97,38 @@ def make_client(provider: str = ""):
     raise RuntimeError("不支持的云存储厂商：%s" % provider)
 
 
+def purge_provider(name: str) -> dict:
+    """清空某厂商桶内本系统根前缀下的所有对象。
+
+    项目约定同一时间只用一家云仓：切换到另一家之后，旧云仓的数据必须清空，
+    避免同一份知识库在两处各存一份、费用双付、恢复时取到旧包。
+    返回 {"provider", "prefix", "deleted", "failed"}；失败项逐条记录，不中断整体。
+    """
+    normalized = _normalize(name) or (name or "").strip().lower()
+    if normalized not in PROVIDER_LABELS:
+        raise RuntimeError("不支持的云存储厂商：%s" % name)
+    client = make_client(normalized)
+    prefix = client.root_dir_key()
+    deleted = 0
+    failed: list[dict] = []
+    # 每轮只取第一页，删完再取，保证游标不会因为对象减少而错位。
+    for _ in range(500):
+        listing = client.list_files(prefix, limit=200, offset=0)
+        items = listing.get("file_list") or []
+        if not items:
+            break
+        for item in items:
+            key = item.get("file_id") or ""
+            try:
+                client.delete(key)
+                deleted += 1
+            except Exception as exc:  # noqa: BLE001
+                failed.append({"key": key, "error": str(exc)[:160]})
+        if len(items) < 200:
+            break
+    return {"provider": normalized, "prefix": prefix, "deleted": deleted, "failed": failed}
+
+
 def cloud_enabled() -> bool:
     flag = env("JOURNAL_CLOUD_ENABLED", "1").strip().lower()
     if flag not in ("1", "true", "yes", "on"):
