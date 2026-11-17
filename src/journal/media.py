@@ -484,8 +484,41 @@ def _sniff_ext(data: bytes) -> str:
     return ".jpg"
 
 
+def _scan_other_accounts_enabled() -> bool:
+    """是否把非当前登录的微信号目录也纳入扫描。
+
+    默认关闭：一台机器同一时刻只有一个微信号在线，只有它的 V2 密钥可推导。
+    已经退出登录的号目录里那批原件解不开，反复试只是空转，还会把“别的号的
+    数据”混进来。需要时置 JOURNAL_SCAN_OTHER_ACCOUNTS=1 再开。
+    """
+    raw = (os.getenv("JOURNAL_SCAN_OTHER_ACCOUNTS") or "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _current_account_names() -> set:
+    """按 WXID 挑出当前登录号的目录名，例如 wxid_abh6zf6773ta22_c8de。
+
+    目录名 = 微信号 + "_" + 4位后缀，所以先精确匹配，再按前缀匹配；
+    不能按 "_" 切分（wxid_ 本身带下划线，切了会变成 "wxid"）。
+    """
+    try:
+        from src.config import load_config
+        from src.wechat.account_paths import list_account_dirs
+        cfg = load_config()
+        data_dir = getattr(cfg, "wechat_data_dir", "") or os.getenv("WECHAT_DATA_DIR", "")
+        wxid = (os.getenv("WXID") or getattr(cfg, "wxid", "") or "").strip()
+        if not data_dir or not wxid:
+            return set()
+        names = {d.name for d in list_account_dirs(Path(data_dir))}
+        if wxid in names:
+            return {wxid}
+        return {n for n in names if n.startswith(wxid)}
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def _decrypt_fav_any(fav_id: int, fullmd5: str, fullsize: Optional[int]) -> Optional[bytes]:
-    """收藏图片可能在哪个账号目录不确定，逐个账号试，别只认第一个。"""
+    """收藏图片优先在当前登录号目录解；其余号默认不碰（见上方开关）。"""
     try:
         import os as _os
         from pathlib import Path as _Path
@@ -497,6 +530,10 @@ def _decrypt_fav_any(fav_id: int, fullmd5: str, fullsize: Optional[int]) -> Opti
         accounts = list_account_dirs(_Path(data_dir))
         if not accounts:
             return None
+        if not _scan_other_accounts_enabled():
+            current = _current_account_names()
+            if current:
+                accounts = [a for a in accounts if a.name in current] or accounts[:1]
         manager = V2CacheManager.get_instance(data_dir)
         for acc in accounts:
             try:
@@ -586,6 +623,10 @@ def scan_chat_media(store, limit: int = 4) -> dict:
         data_dir = getattr(cfg, "wechat_data_dir", "") or os.getenv("WECHAT_DATA_DIR", "")
         from src.wechat.account_paths import list_account_dirs
         accounts = list_account_dirs(Path(data_dir)) if data_dir else []
+        if accounts and not _scan_other_accounts_enabled():
+            current = _current_account_names()
+            if current:
+                accounts = [a for a in accounts if a.name in current] or accounts[:1]
     except Exception:
         accounts = []
 
@@ -739,8 +780,11 @@ def sync_favorite_images(store, limit: int = 120) -> dict:
                                              int(it.get("fullsize") or 0) or None)
             if not data:
                 out["skipped"] += 1
-                out["reasons"]["缓存原件解不开（多为副账号密钥不可推导）"] = (
-                    out["reasons"].get("缓存原件解不开（多为副账号密钥不可推导）", 0) + 1)
+                if _scan_other_accounts_enabled():
+                    reason = "缓存原件解不开（多为副账号密钥不可推导）"
+                else:
+                    reason = "原件不在当前登录微信号目录（其它微信号不纳入监控）"
+                out["reasons"][reason] = out["reasons"].get(reason, 0) + 1
                 continue
             ext = _sniff_ext(data)
             tmp = _tmp_dir() / ("fav-%s-%s%s" % (row["fav_id"], fullmd5[:8], ext))
