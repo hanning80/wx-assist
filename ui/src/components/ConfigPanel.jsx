@@ -1,4 +1,4 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import { useState, useRef, useEffect } from 'react'
+﻿﻿﻿﻿﻿﻿﻿﻿﻿import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { CheckCircle, Warning, FloppyDisk, Info, CircleNotch, MagnifyingGlass, Lightning, PaperPlaneTilt, QrCode, SignOut, TestTube, ChatCircle, Trash, CaretDown, CaretRight, X, Brain, ArrowsClockwise, DownloadSimple, Rocket, ArrowSquareOut } from '@phosphor-icons/react'
 import { QRCodeSVG } from 'qrcode.react'
@@ -6,10 +6,12 @@ import { spring, Field, Toggle, Select, Input, API_BASE, getWsUrl } from './Shar
 import ChatDrawer from './ChatDrawer'
 import PlatformConfigDemo from './PlatformConfigDemo'
 import VoiceSection from './VoiceSection'
+import JournalCloudSection from './JournalCloudSection'
 import RagStatus from './RagStatus'
+import UsageCard from './UsageCard'
 
 const pageTransition = {
-  initial: { opacity: 0, x: 12 },
+  initial: { opacity: 1, x: 12 },
   animate: { opacity: 1, x: 0 },
   exit: { opacity: 0, x: -12 },
 }
@@ -211,6 +213,21 @@ function AiSection({ form, update, onOpenSandbox }) {
         )}
       </Field>
 
+      {/* 思考模式：关掉省钱，开了更稳 */}
+      <Field
+        label="思考模式"
+        hint="开：回答更稳，但会先“想”一大段、token 多几倍；关：直接出结果，归纳总结够用，花费省下来"
+      >
+        <div className="flex items-center justify-between rounded-xl border border-border-main bg-bg-raised px-3 py-2.5">
+          <span className="text-sm text-text-main">
+            {form.ai_thinking ? '开 · 更稳，几乎每次都比关掉更省心' : '关 · 更快更省，摘要归纳类够用'}
+          </span>
+          <Toggle enabled={Boolean(form.ai_thinking)} onChange={v => update('ai_thinking', v)} />
+        </div>
+      </Field>
+
+      <UsageCard />
+
       {/* Advanced options — collapsed by default */}
       <button
         type="button"
@@ -383,7 +400,7 @@ function IdentitySection({ form, update }) {
 }
 
 const paramPanel = {
-  initial: { opacity: 0, y: 20 },
+  initial: { opacity: 1, y: 20 },
   animate: { opacity: 1, y: 0, transition: { duration: 0.3, ease: 'easeOut' } },
   exit: { opacity: 0, y: 20, transition: { duration: 0.2 } },
 }
@@ -870,8 +887,8 @@ function GeneralSection({ form, update, updateInfo, onCheckUpdate }) {
   )
 }
 
-const sectionTitles = { ai: 'AI 后端配置', identity: '聊天范围', data: '数据配置', push: '消息推送', voice: '语音通话', general: '通用', sandbox: 'AI 调试台' }
-const sectionAccents = { ai: 'var(--brand-green)', identity: 'var(--status-info)', data: 'var(--brand-green)', push: 'var(--brand-green)', voice: 'var(--brand-green)', general: 'var(--status-info)', sandbox: 'var(--color-purple-500, #8b5cf6)' }
+const sectionTitles = { ai: 'AI 后端配置', identity: '聊天范围', data: '数据配置', push: '消息推送', voice: '语音通话', journal: '日记与复盘 · 云端存储', general: '通用', sandbox: 'AI 调试台' }
+const sectionAccents = { ai: 'var(--brand-green)', identity: 'var(--status-info)', data: 'var(--brand-green)', push: 'var(--brand-green)', voice: 'var(--brand-green)', journal: 'var(--brand-green)', general: 'var(--status-info)', sandbox: 'var(--color-purple-500, #8b5cf6)' }
 
 // ── Credentials Section (连接凭证配置) ─────────────────────────────────
 
@@ -2537,14 +2554,14 @@ function PushSection() {
       <AnimatePresence>
         {showActivateModal && (
           <motion.div
-            initial={{ opacity: 0 }}
+            initial={{ opacity: 1 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center bg-bg-main/70 backdrop-blur-sm"
             onClick={() => setShowActivateModal(false)}
           >
             <motion.div
-              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              initial={{ opacity: 1, scale: 0.9, y: 20 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.9, y: 20 }}
               transition={{ type: 'spring', stiffness: 300, damping: 25 }}
@@ -2737,6 +2754,7 @@ export default function ConfigPanel({ activeSection, onNavigate, updateInfo, onC
   const [form, setForm] = useState({
     ai_provider_base_url: '', ai_provider_api_key: '',
     ai_provider_type: 'auto', ai_provider_model: '', rag_enabled: false,
+    ai_thinking: true,
     wechat_backend: 'wcdb', wechat_groups: '*',
     wechat_data_dir: '',
     wxid: '', db_path: '', has_key: false, key_preview: '', wcdb_key: '',
@@ -2780,6 +2798,7 @@ export default function ConfigPanel({ activeSection, onNavigate, updateInfo, onC
       ai_provider_type: form.ai_provider_type,
       ai_provider_model: form.ai_provider_model,
       ai_provider_extra_body: form.ai_provider_extra_body || '',
+      ai_thinking: Boolean(form.ai_thinking),
       rag_enabled: Boolean(form.rag_enabled),
       wechat_backend: form.wechat_backend,
       wechat_groups: form.wechat_groups,
@@ -2817,7 +2836,7 @@ export default function ConfigPanel({ activeSection, onNavigate, updateInfo, onC
       <AnimatePresence>
         {saved && (
           <motion.div
-            initial={{ opacity: 0, y: -8 }}
+            initial={{ opacity: 1, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             className="mb-4 flex items-center gap-2 px-5 py-2.5 bg-brand-green-light border border-brand-green/20 rounded-full text-sm text-brand-green-hover dark:text-brand-green font-medium shadow-sm"
@@ -2828,7 +2847,7 @@ export default function ConfigPanel({ activeSection, onNavigate, updateInfo, onC
         )}
         {saveError && (
           <motion.div
-            initial={{ opacity: 0, y: -8 }}
+            initial={{ opacity: 1, y: -8 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -8 }}
             className="mb-4 flex items-center gap-2 px-5 py-2.5 bg-status-error-soft border border-status-error/20 rounded-full text-sm text-status-error font-medium shadow-sm"
@@ -2859,6 +2878,7 @@ export default function ConfigPanel({ activeSection, onNavigate, updateInfo, onC
                 )}
                 {activeSection === 'push' && <PushPlatformView />}
                 {activeSection === 'voice' && <VoiceSection />}
+                {activeSection === 'journal' && <JournalCloudSection />}
                 {activeSection === 'general' && (
                   <GeneralSection
                     form={form}
@@ -2873,7 +2893,7 @@ export default function ConfigPanel({ activeSection, onNavigate, updateInfo, onC
         </AnimatePresence>
       </div>
 
-      {activeSection !== 'push' && activeSection !== 'general' && activeSection !== 'voice' && (
+      {activeSection !== 'push' && activeSection !== 'general' && activeSection !== 'voice' && activeSection !== 'journal' && (
         <>
           <div className="mt-8 flex flex-col sm:flex-row items-center gap-4">
             <motion.button
@@ -2925,7 +2945,7 @@ export default function ConfigPanel({ activeSection, onNavigate, updateInfo, onC
           {sandboxMessages.map((m, i) => (
             <motion.div
               key={i}
-              initial={{ opacity: 0, y: 8 }}
+              initial={{ opacity: 1, y: 8 }}
               animate={{ opacity: 1, y: 0 }}
               className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >

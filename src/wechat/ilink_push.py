@@ -490,8 +490,14 @@ class ILinkPush:
                     self._last_send_time = time.monotonic()
                     return {"success": False, "error": f"session_expired: errcode={errcode}"}
 
-                # Rate limited: retry with backoff
+                # 限流：ret=-2 且没有明确错误，或错误里带“限流/频繁”。
+                # iLink 的 -2 也用于 “prepare failed”（通道没准备好/账号离线），
+                # 这不是限流，重试 3 次只会白等 21 秒并刷日志，直接交给上层。
                 if ret == RATE_LIMIT_RET:
+                    if errmsg and "prepare failed" in str(errmsg).lower():
+                        self._last_send_time = time.monotonic()
+                        return {"success": False,
+                                "error": "push_not_ready: %s" % errmsg}
                     if attempt < max_retries:
                         delay = SEND_RETRY_DELAYS[attempt] if attempt < len(SEND_RETRY_DELAYS) else 12.0
                         logger.warning("iLink rate limited, retry %d/%d in %.1fs", attempt + 1, max_retries, delay)

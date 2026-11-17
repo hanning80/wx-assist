@@ -1,10 +1,10 @@
-﻿import { useState, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { motion } from 'framer-motion'
 import { Check, Spinner } from '@phosphor-icons/react'
 import { API_BASE } from './SharedComponents'
 
 const pageTransition = {
-  initial: { opacity: 0, y: 8 },
+  initial: { opacity: 1, y: 8 },
   animate: { opacity: 1, y: 0 },
 }
 

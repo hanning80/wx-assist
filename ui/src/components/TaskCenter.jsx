@@ -7,7 +7,7 @@ const TASK_TYPES = {
   group_digest: { label: '群聊摘要', icon: ChatCircleDots, color: 'text-brand-green' },
   oa_digest: { label: '公众号摘要', icon: Newspaper, color: 'text-blue-400' },
   oa_article_alert: { label: '公众号即时提醒', icon: Newspaper, color: 'text-orange-400' },
-  cron: { label: '定时任务', icon: Clock, color: 'text-amber-400' },
+  cron: { label: '定时采集', icon: Clock, color: 'text-amber-400' },
 }
 
 // 任务中心不展示的 OA 缓存同步类任务（全文抓取/增量同步/账号同步）
@@ -250,7 +250,7 @@ export default function TaskCenter({ open, onClose }) {
       <AnimatePresence>
         {open && (
           <motion.div
-            initial={{ opacity: 0 }}
+            initial={{ opacity: 1 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
@@ -349,7 +349,7 @@ export default function TaskCenter({ open, onClose }) {
         <div className="flex gap-1 px-5 py-2 border-b border-border-main shrink-0">
           {[
             { key: 'all', label: '全部' },
-            { key: 'cron', label: '⏰ 定时任务' },
+            { key: 'cron', label: '⏰ 定时采集' },
             { key: 'oa', label: '📰 公众号' },
             { key: 'group_digest', label: '💬 群聊' },
           ].map(f => (
@@ -401,7 +401,7 @@ export default function TaskCenter({ open, onClose }) {
             return (
               <motion.div
                 key={task.id}
-                initial={{ opacity: 0, y: 8 }}
+                initial={{ opacity: 1, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.15 }}
                 className="bg-bg-card rounded-xl border border-border-main p-3.5 space-y-2"

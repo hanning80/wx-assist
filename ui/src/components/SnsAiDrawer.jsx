@@ -1,4 +1,4 @@
-﻿import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, PaperPlaneTilt, Sparkle, ChatCircle, Robot, User, ArrowsClockwise, MagnifyingGlass } from '@phosphor-icons/react'
 import { API_BASE } from './SharedComponents'
@@ -272,7 +272,7 @@ export default function SnsAiDrawer({ open, onClose, contacts = [] }) {
       <AnimatePresence>
         {open && (
           <motion.div
-            initial={{ opacity: 0 }}
+            initial={{ opacity: 1 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
@@ -344,7 +344,7 @@ export default function SnsAiDrawer({ open, onClose, contacts = [] }) {
                   <AnimatePresence>
                     {contactDropdownOpen && (
                       <motion.div
-                        initial={{ opacity: 0, y: -4 }}
+                        initial={{ opacity: 1, y: -4 }}
                         animate={{ opacity: 1, y: 0 }}
                         exit={{ opacity: 0, y: -4 }}
                         className="absolute z-50 mt-1.5 w-[calc(100%-40px)] bg-bg-card border border-border-main rounded-xl shadow-lg overflow-hidden"

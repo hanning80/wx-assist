@@ -22,7 +22,7 @@ export function Field({ label, hint, error, children }) {
         {error ? (
           <motion.p
             key="error"
-            initial={{ opacity: 0, height: 0, y: -4 }}
+            initial={{ opacity: 1, height: 0, y: -4 }}
             animate={{ opacity: 1, height: 'auto', y: 0 }}
             exit={{ opacity: 0, height: 0, y: -4 }}
             transition={{ duration: 0.15 }}
@@ -33,7 +33,7 @@ export function Field({ label, hint, error, children }) {
         ) : hint ? (
           <motion.p
             key="hint"
-            initial={{ opacity: 0, height: 0, y: -4 }}
+            initial={{ opacity: 1, height: 0, y: -4 }}
             animate={{ opacity: 1, height: 'auto', y: 0 }}
             exit={{ opacity: 0, height: 0, y: -4 }}
             transition={{ duration: 0.15 }}
@@ -103,7 +103,7 @@ export function Select({ value, onChange, options, variant = 'row' }) {
 
       {open && (
         <motion.div
-          initial={{ opacity: 0, y: -4 }}
+          initial={{ opacity: 1, y: -4 }}
           animate={{ opacity: 1, y: 0 }}
           className="absolute z-50 left-0 right-0 mt-1.5 bg-bg-card border border-border-main rounded-2xl shadow-xl overflow-hidden max-h-[320px] overflow-y-auto"
         >
@@ -241,7 +241,7 @@ export function ComboInput({ value, onChange, options = [], placeholder }) {
       <AnimatePresence>
         {open && suggestions.length > 0 && (
           <motion.div
-            initial={{ opacity: 0, y: -4 }}
+            initial={{ opacity: 1, y: -4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -4 }}
             className="absolute z-50 left-0 right-0 mt-1.5 bg-bg-card border border-border-main rounded-2xl shadow-xl overflow-hidden max-h-[280px] overflow-y-auto"
@@ -304,7 +304,7 @@ export function ImageLightbox({ src, onClose }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
+      initial={{ opacity: 1 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center bg-bg-main/90 dark:bg-black/80 backdrop-blur-sm cursor-zoom-out"

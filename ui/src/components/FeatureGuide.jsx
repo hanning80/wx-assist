@@ -1380,7 +1380,7 @@ function GuideCard({ step, stepIndex, totalSteps, onPrev, onNext, onSkip, onGoTo
   return (
     <motion.div
       key={`card-${stepIndex}`}
-      initial={{ opacity: 0, y: 20, scale: 0.95 }}
+      initial={{ opacity: 1, y: 20, scale: 0.95 }}
       animate={{ opacity: 1, y: 0, scale: 1 }}
       transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
       className="w-[340px] rounded-[20px] overflow-hidden absolute pointer-events-auto"
@@ -1431,7 +1431,7 @@ function GuideCard({ step, stepIndex, totalSteps, onPrev, onNext, onSkip, onGoTo
         {/* Step content with animation */}
         <motion.div
           key={`step-content-${stepIndex}`}
-          initial={{ opacity: 0, y: 12 }}
+          initial={{ opacity: 1, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.35, ease: [0.16, 1, 0.3, 1] }}
         >

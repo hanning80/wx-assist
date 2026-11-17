@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Eye, DownloadSimple, MagnifyingGlass, Clock, ShieldCheck, ShieldWarning, Heart, ChatCircle, CaretDown, Funnel, X, MapPin, FolderOpen, Sparkle } from '@phosphor-icons/react'
 import { ImageLightbox, API_BASE, getWsUrl } from './SharedComponents'
@@ -555,7 +555,7 @@ export default function MomentsTab() {
 
   return (
     <>
-    <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}>
+    <motion.div initial={{ opacity: 1, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}>
       {/* Timeline */}
       <div className="mb-5">
         <div className="flex items-center gap-2.5 mb-1">
@@ -691,7 +691,7 @@ export default function MomentsTab() {
           <AnimatePresence>
             {contactDropdownOpen && (
               <motion.div
-                initial={{ opacity: 0, y: -4 }}
+                initial={{ opacity: 1, y: -4 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -4 }}
                 className="absolute z-50 mt-1.5 right-0 w-56 bg-bg-card border border-border-main rounded-xl shadow-lg overflow-hidden"
@@ -747,7 +747,7 @@ export default function MomentsTab() {
           <AnimatePresence>
             {timeDropdownOpen && (
               <motion.div
-                initial={{ opacity: 0, y: -4 }}
+                initial={{ opacity: 1, y: -4 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -4 }}
                 className="absolute z-50 mt-1.5 right-0 w-44 bg-bg-card border border-border-main rounded-xl shadow-lg overflow-hidden"
@@ -803,7 +803,7 @@ export default function MomentsTab() {
       {/* Export status */}
       {exportStatus && (
         <motion.div
-          initial={{ opacity: 0, y: -8 }}
+          initial={{ opacity: 1, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
           className={`mb-4 p-3 rounded-xl border text-xs font-medium flex items-center gap-2
             ${exportStatus === 'completed'

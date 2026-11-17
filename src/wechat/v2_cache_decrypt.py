@@ -28,6 +28,8 @@ import os
 import re
 import shutil
 import struct
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -50,6 +52,79 @@ IMAGE_MAGIC = {
     'wxgf': (b'wxgf',),  # WeChat HEVC container
     'bmp': (b'BM',),
 }
+
+
+def _find_ffmpeg() -> str:
+    """本机 ffmpeg 路径；优先用随程序打包的那一份。
+
+    打包成 exe 后不能依赖用户电脑 PATH 里有没有 ffmpeg，所以固定找：
+    1. 环境变量 WX_ASSIST_FFMPEG
+    2. PyInstaller 解包目录 / exe 同级 tools/ffmpeg/ffmpeg.exe
+    3. 源码目录 tools/ffmpeg/ffmpeg.exe
+    4. 系统 PATH
+    """
+    env = os.environ.get("WX_ASSIST_FFMPEG", "").strip()
+    if env and Path(env).is_file():
+        return env
+
+    candidates = []
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        candidates.append(Path(meipass) / "tools" / "ffmpeg" / "ffmpeg.exe")
+    if getattr(sys, "frozen", False):
+        candidates.append(Path(sys.executable).resolve().parent
+                          / "tools" / "ffmpeg" / "ffmpeg.exe")
+    candidates.append(Path(__file__).resolve().parents[2]
+                      / "tools" / "ffmpeg" / "ffmpeg.exe")
+    for p in candidates:
+        if p.is_file():
+            return str(p)
+
+    ff = shutil.which("ffmpeg")
+    if ff:
+        return ff
+    local = Path(os.environ.get("LOCALAPPDATA", ""))
+    for p in local.glob(
+        r"Microsoft\WinGet\Packages\Gyan.FFmpeg_*\ffmpeg-*\bin\ffmpeg.exe"
+    ):
+        if p.is_file():
+            return str(p)
+    return ""
+
+
+def decode_wxgf(data: bytes) -> Optional[bytes]:
+    """把微信 ``wxgf`` HEVC 原图转成普通 PNG。
+
+    微信新版图片原图不是 JPEG，而是 ``wxgf`` 容器：前 300 多字节是
+    色彩配置等元数据，后面才是 HEVC 码流。只取第一个四字节起始码
+    之后的码流交给 ffmpeg，转成浏览器、OCR 都能直接用的 PNG。
+    """
+    if not data or data[:4] != b"wxgf":
+        return None
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg:
+        logger.warning("图片是微信 HEVC 格式，但本机没有 ffmpeg，无法转普通图片")
+        return None
+    start = data.find(b"\x00\x00\x00\x01")
+    if start < 0:
+        return None
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "hevc",
+             "-i", "pipe:0", "-frames:v", "1", "-f", "image2pipe",
+             "-vcodec", "png", "pipe:1"],
+            input=data[start:], capture_output=True, timeout=30, check=False,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("微信 HEVC 图片转码失败: %s", exc)
+        return None
+    out = proc.stdout or b""
+    if proc.returncode == 0 and out.startswith(b"\x89PNG"):
+        return out
+    logger.warning("微信 HEVC 图片转码失败：rc=%s err=%s",
+                   proc.returncode, (proc.stderr or b"")[:200])
+    return None
+
 
 
 def _read_dat_file(file_path, max_retries=3):
@@ -272,6 +347,55 @@ def extract_uin_from_kvcomm() -> Optional[int]:
     return max(candidate_uins)
 
 
+def extract_uin_candidates_from_kvcomm() -> list[int]:
+    """返回 kvcomm 文件名里所有可能的 uin（不预判哪个正确）。
+
+    WeChat 4.x 的 kvcomm 目录里可能同时出现多个数字：
+      - ``key_0_{uin}_...``          → appid=0，第二个数字是 uin
+      - ``key_{uin}_{appid}_...``    → 第一个数字是 uin
+      - ``monitordata_{uin}_...``    → 第一个数字是 uin
+
+    旧逻辑用收藏缩略图投票选一个 uin，在收藏缓存为空时会直接选错，
+    进而把聊天图片全解成 ``Padding is incorrect``。这里只负责收集候选，
+    由 :meth:`V2CacheManager._resolve_keys_for_account` 用真实聊天图片
+    逐个试解验证，不再靠文件名大小或投票猜。
+    """
+    appdata = os.environ.get('APPDATA', '')
+    if not appdata:
+        return []
+
+    candidate_dirs = [
+        Path(appdata) / 'Tencent' / 'xwechat' / 'net' / 'kvcomm',
+        Path(appdata) / 'Tencent' / 'xwechat' / 'net_1' / 'kvcomm',
+    ]
+
+    pattern_uin_slot2 = re.compile(r'key_0_(\d+)_')
+    pattern_uin_slot1 = re.compile(r'key_(\d{9,11})_\d+_')
+    pattern_monitor_uin = re.compile(r'monitordata_(\d{9,11})_')
+
+    candidates: list[int] = []
+
+    def _add(val: int) -> None:
+        if val > 100000000 and val not in candidates:
+            candidates.append(val)
+
+    for kvcomm_dir in candidate_dirs:
+        if not kvcomm_dir.exists():
+            continue
+        for f in kvcomm_dir.iterdir():
+            if not f.is_file():
+                continue
+            name = f.name
+            for m in pattern_uin_slot2.finditer(name):
+                _add(int(m.group(1)))
+            for m in pattern_uin_slot1.finditer(name):
+                _add(int(m.group(1)))
+            for m in pattern_monitor_uin.finditer(name):
+                _add(int(m.group(1)))
+
+    return candidates
+
+
 def _find_fav_cache_dir() -> Optional[Path]:
     """Find the favorite cache directory from WECHAT_DATA_DIR."""
     data_dir = os.getenv('WECHAT_DATA_DIR', '')
@@ -452,15 +576,20 @@ class V2CacheManager:
                 return
 
             self._detected = True
-            uin = extract_uin_from_kvcomm()
-            if uin is None:
-                return
+            uin_candidates = extract_uin_candidates_from_kvcomm()
+            if not uin_candidates:
+                # 兼容旧入口：没有候选时仍尝试老逻辑
+                legacy = extract_uin_from_kvcomm()
+                if legacy is None:
+                    return
+                uin_candidates = [legacy]
 
-            self._uin = uin
+            self._uin = uin_candidates[0]
 
             # Derive keys for each account directory.
             # 目录识别不依赖 wxid_ 前缀（自定义微信号账号同样支持）；
-            # 密钥推导对每个账号目录走"候选 + 真实 V2 文件验证"闭环。
+            # 密钥推导对每个账号目录走"uin 候选 + wxid 候选 + 真实 V2
+            # 图片试解"闭环，不再只赌 kvcomm 文件名里最大的那个 uin。
             if self._data_dir.exists():
                 from src.wechat.account_paths import list_account_dirs
                 for d in list_account_dirs(self._data_dir):
@@ -470,83 +599,113 @@ class V2CacheManager:
                             "(custom wechat id) — using candidate+verify "
                             "resolution", d.name)
                     try:
-                        self._keys[d.name] = self._resolve_keys_for_account(d, uin)
+                        self._keys[d.name] = self._resolve_keys_for_account(
+                            d, uin_candidates)
                     except Exception as exc:       # noqa: BLE001
                         logger.debug("V2 key resolution failed for %s: %s",
                                      d.name, exc)
-                        self._keys[d.name] = derive_v2_keys(uin, d.name)
+                        self._keys[d.name] = derive_v2_keys(
+                            uin_candidates[0], d.name)
 
     def _resolve_keys_for_account(self, account_dir: Path,
-                                  uin: int) -> tuple[str, int]:
-        """为单个账号目录解析 V2 密钥（候选 + 真实 V2 文件验证闭环）。
+                                  uin_candidates) -> tuple[str, int]:
+        """为单个账号目录解析 V2 密钥（uin + wxid 候选，真实图片试解）。
 
-        兼容性设计（对现有 wxid_ 账号零影响）：
-
-        - 首选候选 = 目录名剥 ``_XXXX`` 后缀，与旧逻辑的推导输入完全一致，
-          验证通过（或无法验证）时结果与旧行为相同；
-        - 只有当首选候选验证失败、且其他候选验证成功时才改变结果——
-          即验证闭环只可能把"解不出图"修正为"能解出图"，反之不可能；
-        - 找不到 V2 样本文件时直接返回旧推导结果，行为不变。
-
-        候选来源见 :meth:`_collect_wxid_candidates`。不做内存扫描。
+        关键修复：kvcomm 里可能同时存在多个数字，旧逻辑用收藏缩略图投票
+        选 uin，收藏为空时会选错；这里把每个 uin 候选 × 每个 wxid 候选
+        都生成密钥，再用真实 V2 聊天图片试解，能完整解出 JPEG/PNG 的
+        那一组才采用。没有样本时退回第一个 uin 的旧推导，保证兼容。
         """
+        if isinstance(uin_candidates, int):
+            uin_candidates = [uin_candidates]
+        uin_candidates = [int(u) for u in uin_candidates if u]
+
         dirname = account_dir.name
-        default_keys = derive_v2_keys(uin, dirname)
+        default_keys = derive_v2_keys(uin_candidates[0], dirname)
 
-        sample = self._find_v2_sample(account_dir)
-        if sample is None:
-            return default_keys
-        if _v2_key_works(sample, *default_keys):
+        samples = self._find_v2_samples(account_dir)
+        if not samples:
             return default_keys
 
-        for cand in self._collect_wxid_candidates(account_dir):
-            keys = _derive_keys_from_base(uin, cand)
-            if keys == default_keys:
-                continue
-            if _v2_key_works(sample, *keys):
-                logger.info(
-                    "V2 keys verified via alternative candidate for %s "
-                    "(base=%r, non-default key adopted)", dirname, cand)
-                return keys
+        bases = self._collect_wxid_candidates(account_dir)
+        for sample in samples:
+            for uin in uin_candidates:
+                for base in bases:
+                    keys = _derive_keys_from_base(uin, base)
+                    if keys == default_keys:
+                        continue
+                    if _v2_key_works(sample, *keys):
+                        logger.info(
+                            "V2 keys verified: account=%s uin=%s base=%r",
+                            dirname, uin, base)
+                        return keys
+            # 默认候选也试一次（可能样本刚好是它）
+            if _v2_key_works(sample, *default_keys):
+                return default_keys
 
         logger.debug(
             "V2 key verification found no working candidate for %s; "
             "keeping default derivation", dirname)
         return default_keys
 
-    def _find_v2_sample(self, account_dir: Path,
-                        max_candidates: int = 24) -> Optional[bytes]:
-        """从账号目录的收藏缓存里找一个 V2 样本文件（用于密钥验证）。
+    def _find_v2_samples(self, account_dir: Path,
+                         max_samples: int = 8,
+                         max_candidates: int = 40) -> list[bytes]:
+        """收集可用于密钥验证的 V2 样本。
 
-        只认 V2 头（V1 用固定密钥 ``md5("0")``，无法用于验证候选）。
-        优先 ``thumb/``（文件最小、验证最快），按文件大小升序尝试，
-        最多读 ``max_candidates`` 个文件即止。
+        先聊天图片 ``msg/attach/*/*/Img/*.dat``（绝大多数账号一定有），
+        再收藏缩略图（可能为空）。
+        按文件大小升序，最多取 ``max_samples`` 个。
         """
-        fav_dir = Path(account_dir) / 'business' / 'favorite'
-        if not fav_dir.is_dir():
-            return None
-        for sub in ('thumb', 'mid', 'data'):
-            base = fav_dir / sub
-            if not base.is_dir():
-                continue
+        samples: list[bytes] = []
+        paths: list[Path] = []
+
+        # 聊天图片优先：收藏缓存可能为空，而聊天图片是绝大多数账号都有的
+        # 真实 V2 样本；先取最小的缩略图/普通图，验证最快。
+        img_root = Path(account_dir) / 'msg' / 'attach'
+        if img_root.is_dir():
             try:
-                entries = sorted(base.rglob('*'), key=lambda p: p.stat().st_size)
+                img_paths = [
+                    p for p in img_root.rglob('*.dat') if p.parent.name == 'Img'
+                ]
+                paths.extend(sorted(img_paths, key=lambda p: p.stat().st_size))
             except OSError:
-                continue
-            tried = 0
-            for f in entries:
+                pass
+
+        fav_dir = Path(account_dir) / 'business' / 'favorite'
+        if fav_dir.is_dir():
+            for sub in ('thumb', 'mid', 'data'):
+                base = fav_dir / sub
+                if not base.is_dir():
+                    continue
                 try:
-                    if not f.is_file() or f.stat().st_size < 20:
-                        continue
+                    paths.extend(sorted(base.rglob('*'), key=lambda p: p.stat().st_size))
                 except OSError:
                     continue
-                tried += 1
-                if tried > max_candidates:
-                    break
-                raw = _read_dat_file(str(f))
-                if raw and raw[:6] == V2_MAGIC:
-                    return raw
-        return None
+
+        tried = 0
+        for f in paths:
+            if len(samples) >= max_samples:
+                break
+            tried += 1
+            if tried > max_candidates:
+                break
+            try:
+                if not f.is_file() or f.stat().st_size < 20:
+                    continue
+            except OSError:
+                continue
+            raw = _read_dat_file(str(f))
+            if raw and raw[:6] == V2_MAGIC:
+                samples.append(raw)
+        return samples
+
+    def _find_v2_sample(self, account_dir: Path,
+                        max_candidates: int = 24) -> Optional[bytes]:
+        """兼容旧调用：返回第一个 V2 样本。"""
+        samples = self._find_v2_samples(
+            account_dir, max_samples=1, max_candidates=max_candidates)
+        return samples[0] if samples else None
 
     def _collect_wxid_candidates(self, account_dir: Path) -> list:
         """收集密钥推导输入（wxid_base）候选，按优先级去重保序。
@@ -621,6 +780,28 @@ class V2CacheManager:
         self._detect_keys()
         return self._uin
 
+    def _find_fav_by_md5(self, md5: str) -> Optional[str]:
+        """收藏缓存文件名就是 md5；逐个账号在 favorite 的 data/mid/thumb 下找。"""
+        if not md5:
+            return None
+        try:
+            for acc in sorted(self._data_dir.iterdir()):
+                if not acc.is_dir():
+                    continue
+                fav = acc / "business" / "favorite"
+                if not fav.exists():
+                    continue
+                for sub in ("data", "mid", "thumb"):
+                    d = fav / sub
+                    if not d.exists():
+                        continue
+                    for p in d.rglob(md5):
+                        if p.is_file() and p.stat().st_size > 0:
+                            return str(p)
+        except OSError:
+            pass
+        return None
+
     def decrypt_fav_image(self, local_id: int, wxid: str,
                           size: str = 'original',
                           fullmd5: str = None,
@@ -652,8 +833,15 @@ class V2CacheManager:
         file_path = None
         md5_info = None
 
-        # If fullmd5 is explicitly provided (from chat records), use it directly
+        # 收藏缓存的文件名就是 md5，直接在各账号 favorite/data|mid|thumb 下找；
+        # 这条路径不依赖聊天硬链接库（收藏图很多不在 image_hardlink_info_v4）。
         if fullmd5:
+            file_path = self._find_fav_by_md5(fullmd5)
+            if file_path:
+                md5_info = fullmd5
+
+        # If fullmd5 is explicitly provided (from chat records), use it directly
+        if fullmd5 and not file_path:
             md5_info = fullmd5
             resolved = self._resolve_hardlink(md5_info, wxid)
             if resolved and Path(resolved).exists() and Path(resolved).stat().st_size > 0:
@@ -663,9 +851,11 @@ class V2CacheManager:
         if not file_path and not fullmd5:
             md5_info = self._get_fav_md5_from_xml(local_id, size)
             if md5_info:
-                resolved = self._resolve_hardlink(md5_info, wxid)
-                if resolved and Path(resolved).exists() and Path(resolved).stat().st_size > 0:
-                    file_path = resolved
+                file_path = self._find_fav_by_md5(md5_info)
+                if not file_path:
+                    resolved = self._resolve_hardlink(md5_info, wxid)
+                    if resolved and Path(resolved).exists() and Path(resolved).stat().st_size > 0:
+                        file_path = resolved
 
         # ── Strategy 2: size matching fallback ─────────────────────────
         if not file_path:
@@ -794,9 +984,15 @@ class V2CacheManager:
                 if data[:6] == V2_MAGIC or data[:6] == V1_MAGIC:
                     result = decrypt_v2_cache(data, aes_key, xor_key)
                     if result:
+                        if result[:4] == b"wxgf":
+                            # 新版微信原图是 HEVC 容器，先转成普通 PNG；
+                            # 转不了再交给上层决定是否退到缩略图。
+                            return decode_wxgf(result) or result
                         return result
                 else:
                     # Legacy/unencrypted format
+                    if data[:4] == b"wxgf":
+                        return decode_wxgf(data) or data
                     return data
             except Exception:
                 pass
@@ -823,6 +1019,29 @@ class V2CacheManager:
             for suffix in ["", "_h"]:
                 dat_path = img_dir / f"{fullmd5}{suffix}.dat"
                 result = _try_decrypt(dat_path)
+                if result:
+                    return result
+
+        # 先用 hardlink.db 由消息里的 md5 还原真实缓存文件。
+        # 新版微信的缓存文件名不一定等于消息 XML 里的 md5：
+        # 例如消息 md5=ad3682…，实际文件是 a640…_h.dat。
+        # 硬链接表能把两者对上，这是聊天图片最可靠的第一入口。
+        try:
+            hardlink_path = self._resolve_hardlink(fullmd5, wxid)
+        except Exception:
+            hardlink_path = None
+        if hardlink_path:
+            result = _try_decrypt(Path(hardlink_path))
+            if result:
+                if result[:4] == b"wxgf" and size != "thumb":
+                    # 原图是 HEVC 容器，继续按后缀找可显示的缩略图
+                    pass
+                else:
+                    return result
+            # 缩略图尺寸时，优先尝试同名的 _t.dat
+            if size == "thumb" and hardlink_path.endswith("_h.dat"):
+                thumb_path = Path(hardlink_path[:-6] + "_t.dat")
+                result = _try_decrypt(thumb_path)
                 if result:
                     return result
 
@@ -925,7 +1144,10 @@ class V2CacheManager:
             client = get_wcdb_client()
             if not client:
                 return None
-            path = client.resolve_image_hardlink(md5)
+            # 收藏可能属于副账号；必须把账号目录一起传进去，
+            # 否则只会在主账号的 attach 目录里找，永远找不到副账号的图。
+            account_dir = str(self._data_dir / wxid) if wxid else ""
+            path = client.resolve_image_hardlink(md5, account_dir=account_dir)
             return path or None
         except Exception:
             return None

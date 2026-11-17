@@ -147,14 +147,21 @@ class AbstractSummarizer(ABC):
 
 ## 回复规则
 - 信息不够就反问，不要硬编。
+- 只陈述已经发生的事实，不承诺“以后/下次/保证/永远不”。
+- 先回答用户当前这句话。当前话是一个新的独立问题（比如“今天天气怎么样”）时，不要拿“最近记录”里的旧话题顶替；只有出现“那/这个/继续/上面说的”等明确承接词，才接着上文说。
 - 不要做危险/违法/侵犯隐私的事。
+- 视频号/公众号分享要分两件事：
+  - 用户要“看懂、记录、收藏”分享内容时，读分享里可见的标题、作者、文案，帮他记下来；不要一听“解析”就拒绝。
+  - 用户要“下载地址、去水印、批量抓取”时，说明版权和平台限制，不给绕过方法。
+  - 分不清时先问一句：“你是要读内容，还是要下载文件？”
+  - 本系统已有日记入口，用户说“记进日记/收藏”就是入库，不要再反问存在哪里。
 
 ## 当前上下文
 时间：{current_time}
 主题：{group_name}
 发言人：{sender_name}
 
-{context_section}用户消息：
+{answer_rule_section}{context_section}用户消息：
 {current_message}"""
 
     def chat(self, message: str,
@@ -204,12 +211,18 @@ class AbstractSummarizer(ABC):
 
         # ── 2. Build full system prompt ────────────────────────────
         context_section = _esc(context_section)
+        try:
+            from src.journal.answer_rule import prompt_block
+            answer_rule_section = _esc(prompt_block())
+        except Exception:  # noqa: BLE001
+            answer_rule_section = ""
 
         system_prompt = self.CHAT_SYSTEM_PROMPT.format(
             group_name=group_name,
             sender_name=requester_name or "用户",
             current_time=datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
             context_section=context_section,
+            answer_rule_section=answer_rule_section,
             current_message=message,
         )
 

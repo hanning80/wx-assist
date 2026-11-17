@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Play, Stop, Key, Spinner, CheckCircle, XCircle, ArrowsClockwise, WarningOctagon, Clock, ChatCircle, Newspaper, Database, WechatLogo, Brain, Robot, Cube, Lightning, ArrowRight, PaperPlaneTilt, Bell } from '@phosphor-icons/react'
 import { API_BASE, isRegexTag } from './SharedComponents'
@@ -135,7 +135,7 @@ function KeywordAlertCard({ onTabChange }) {
                 {(alertGroups || []).map((ag, i) => (
                   <motion.div
                     key={`kw-${i}`}
-                    initial={{ opacity: 0, y: 6 }}
+                    initial={{ opacity: 1, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.25, delay: i * 0.04 }}
                     className="flex items-center gap-3 px-3.5 py-2.5 rounded-xl bg-bg-raised/40 dark:bg-bg-raised/20 border border-border-main/30 hover:border-border-main/60 transition-colors"
@@ -188,7 +188,7 @@ function KeywordAlertCard({ onTabChange }) {
                 {(oaMonitors || []).map((mg, i) => (
                   <motion.div
                     key={`oa-${mg.id}`}
-                    initial={{ opacity: 0, y: 6 }}
+                    initial={{ opacity: 1, y: 6 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ duration: 0.25, delay: i * 0.04 }}
                     className="flex items-center gap-3 px-3.5 py-2.5 rounded-xl bg-bg-raised/40 dark:bg-bg-raised/20 border border-border-main/30 hover:border-border-main/60 transition-colors"
@@ -267,7 +267,7 @@ function CronTasksCard() {
   if (!tasks) return null
   if (tasks.length === 0) return (
     <div className="text-center py-6 text-xs text-text-muted">
-      暂无 skill 定时任务
+      暂无技能定时采集
     </div>
   )
 
@@ -329,7 +329,7 @@ function ScheduledTasksCard() {
 
 function TaskRow({ task, index }) {
   const meta = TASK_TYPE_META[task.type] || {
-    icon: Clock, label: '定时任务',
+    icon: Clock, label: '采集与维护',
     accent: 'text-brand-green', badge: 'bg-brand-green/[0.08] text-brand-green',
     leftBorder: 'border-l-brand-green/40',
   }
@@ -350,7 +350,7 @@ function TaskRow({ task, index }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: 6 }}
+      initial={{ opacity: 1, y: 6 }}
       animate={{ opacity: task.enabled ? 1 : 0.5, y: 0 }}
       transition={{ duration: 0.3, delay: index * 0.05 }}
       className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl border border-border-main/30 border-l-2 ${meta.leftBorder} bg-bg-raised/40 dark:bg-bg-raised/20 hover:border-border-main/60 transition-colors`}
@@ -391,7 +391,9 @@ function TaskRow({ task, index }) {
 /* ═══════════════════════════════════════════════════════
    Dashboard
    ═══════════════════════════════════════════════════════ */
-export default function Dashboard({ status, onTabChange }) {
+export default function Dashboard({ status, onTabChange, connected = true }) {
+  const live = connected !== false
+  const running = live && status.running
   const [busy, setBusy] = useState(false)
   const [diagnosing, setDiagnosing] = useState(false)
   const [diagResult, setDiagResult] = useState(null)
@@ -406,7 +408,7 @@ export default function Dashboard({ status, onTabChange }) {
   async function handleToggle() {
     setBusy(true)
     try {
-      await fetch(`${API_BASE}${status.running ? '/api/stop' : '/api/start'}`, { method: 'POST' })
+      await fetch(`${API_BASE}${running ? '/api/stop' : '/api/start'}`, { method: 'POST' })
     } catch {}
     setTimeout(() => setBusy(false), 1000)
   }
@@ -435,7 +437,7 @@ export default function Dashboard({ status, onTabChange }) {
 
       {/* ── Error banner ─── */}
       {status.error && !status.error.includes('KEY_MISSING') && (
-        <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }}
+        <motion.div initial={{ opacity: 1, y: -6 }} animate={{ opacity: 1, y: 0 }}
           className="flex items-center gap-2.5 px-5 py-3 bg-status-error-soft border border-status-error/20 rounded-xl text-[13px] text-status-error font-medium">
           <WarningOctagon size={14} weight="fill" />
           <span>{status.error}</span>
@@ -445,44 +447,44 @@ export default function Dashboard({ status, onTabChange }) {
 
       {/* ── Hero service card ─── */}
       <motion.div
-        initial={{ opacity: 0, y: 12 }}
+        initial={{ opacity: 1, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ ...spring, duration: 0.6 }}
         className="bg-bg-card border border-border-main rounded-2xl overflow-hidden"
       >
         {/* Top accent line */}
-        <div className={`h-[2px] transition-colors duration-700 ${status.running ? 'bg-brand-green/50' : 'bg-bg-inset'}`} />
+        <div className={`h-[2px] transition-colors duration-700 ${running ? 'bg-brand-green/50' : 'bg-bg-inset'}`} />
         <div className="px-6 py-5 flex flex-col sm:flex-row items-center justify-between gap-3">
           <div className="flex items-center gap-4">
             {/* Robot icon */}
             <div className={`relative w-14 h-14 rounded-2xl flex items-center justify-center transition-colors duration-500 ${
-              status.running ? 'bg-brand-green/[0.08] dark:bg-brand-green/[0.06]' : 'bg-bg-inset'
+              running ? 'bg-brand-green/[0.08] dark:bg-brand-green/[0.06]' : 'bg-bg-inset'
             }`}>
-              {status.running && (
+              {running && (
                 <motion.div
                   className="absolute inset-0 rounded-2xl border border-brand-green/15"
                   animate={{ scale: [1, 1.1, 1], opacity: [0.25, 0, 0.25] }}
                   transition={{ duration: 2.5, repeat: Infinity, ease: 'easeInOut' }}
                 />
               )}
-              <Robot size={26} weight="fill" className={`relative z-10 transition-colors duration-500 ${status.running ? 'text-brand-green' : 'text-text-muted'}`} />
+              <Robot size={26} weight="fill" className={`relative z-10 transition-colors duration-500 ${running ? 'text-brand-green' : 'text-text-muted'}`} />
             </div>
 
             <div>
               <AnimatePresence mode="wait">
                 <motion.h2
-                  key={status.running ? 'on' : 'off'}
+                  key={running ? 'on' : 'off'}
                   initial={{ y: 8, opacity: 0 }}
                   animate={{ y: 0, opacity: 1 }}
                   exit={{ y: -8, opacity: 0 }}
                   transition={{ duration: 0.25 }}
                   className="text-[17px] font-semibold text-text-main leading-tight"
                 >
-                  {status.running ? '助手服务运行中' : '助手服务已停止'}
+                  {running ? '助手服务运行中' : '助手服务已停止'}
                 </motion.h2>
               </AnimatePresence>
               <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                {status.running && (
+                {running && (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-mono font-bold bg-brand-green/[0.08] text-brand-green dark:bg-brand-green/[0.10]">
                     <Cube size={9} weight="fill" />
                     {status.model_name || '-'}
@@ -509,19 +511,19 @@ export default function Dashboard({ status, onTabChange }) {
             whileHover={{ scale: 1.02 }}
             onClick={handleToggle} disabled={busy}
             className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-[13px] font-semibold transition-all disabled:opacity-50 cursor-pointer ${
-              status.running
+              running
                 ? 'bg-bg-raised text-text-main border border-border-main hover:bg-status-error-soft hover:text-status-error hover:border-status-error/20'
                 : 'bg-brand-green text-white hover:opacity-90'
             }`}
           >
-            {status.running ? <><Stop size={14} weight="fill" /> 停止服务</> : <><Play size={14} weight="fill" /> 启动服务</>}
+            {running ? <><Stop size={14} weight="fill" /> 停止服务</> : <><Play size={14} weight="fill" /> 启动服务</>}
           </motion.button>
         </div>
       </motion.div>
 
       {/* ── System health ─── */}
       <motion.div
-        initial={{ opacity: 0, y: 12 }}
+        initial={{ opacity: 1, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ ...spring, delay: 0.08, duration: 0.5 }}
         className="bg-bg-card border border-border-main rounded-2xl overflow-hidden"
@@ -540,20 +542,22 @@ export default function Dashboard({ status, onTabChange }) {
         </div>
 
         <div className="px-6 pb-4 grid grid-cols-2 md:grid-cols-5 gap-3">
-          <StatusTile icon={Database} label="数据库" ok={status.db_ok} okText="正常" errText="异常" />
-          <StatusTile icon={WechatLogo} label="消息推送" ok={status.im_channels?.summary?.state === 'ok'} okText="可用" errText={status.im_channels?.summary?.state === 'error' ? '错误' : status.im_channels?.summary?.state === 'pending' ? '连接中' : '未配置'} detail={
+          <StatusTile icon={Database} label="数据库" ok={live && status.db_ok}
+            okText="正常" errText={live ? '异常' : '未连接'} />
+          <StatusTile icon={WechatLogo} label="消息推送" ok={live && status.im_channels?.summary?.state === 'ok'} okText="可用"
+            errText={!live ? '未连接' : status.im_channels?.summary?.state === 'error' ? '错误' : status.im_channels?.summary?.state === 'pending' ? '连接中' : '未配置'} detail={
             <span className="flex items-center gap-2 text-[10px] font-mono">
               {['ilink', 'qqbot', 'feishu'].map(name => {
                 const channel = status.im_channels?.[name] || { state: 'unconfigured' }
                 const label = name === 'ilink' ? '微信' : name === 'qqbot' ? 'QQ' : '飞书'
-                const color = channel.state === 'ok' ? 'bg-brand-green' : channel.state === 'error' ? 'bg-status-error' : channel.state === 'pending' ? 'bg-status-warn' : 'bg-text-muted/40'
+                const color = !live ? 'bg-text-muted/40' : channel.state === 'ok' ? 'bg-brand-green' : channel.state === 'error' ? 'bg-status-error' : channel.state === 'pending' ? 'bg-status-warn' : 'bg-text-muted/40'
                 return <span key={name} className="flex items-center gap-0.5"><span className={`inline-block w-1.5 h-1.5 rounded-full ${color}`} />{label}</span>
               })}
             </span>
           } />
-          <StatusTile icon={Brain} label="AI 后端" ok={status.ai_ok} okText="可达"
-            errText={status.ai_error ? '不可用' : '未响应'}
-            detail={status.ai_ok ? (status.model_name || '') : (status.ai_error || '未检测或未成功调用')} />
+          <StatusTile icon={Brain} label="AI 后端" ok={live && status.ai_ok} okText="可达"
+            errText={!live ? '未连接' : status.ai_error ? '不可用' : '未响应'}
+            detail={!live ? '实时连接已断开' : status.ai_ok ? (status.model_name || '') : (status.ai_error || '未检测或未成功调用')} />
           {(() => {
             // RAG state: distinguish 3 outcomes per spec
             // - no_rag build (rag_available=false) → 未安装
@@ -572,10 +576,10 @@ export default function Dashboard({ status, onTabChange }) {
                     : status.rag_ok
                       ? { ok: true, text: '已就绪', detail: '支持聊天/公众号/朋友圈语义检索' }
                       : { ok: false, text: '已关闭', detail: '请在系统配置中启动' }
-            return <StatusTile icon={Cube} label="语义搜索" ok={ragState.ok} okText={ragState.text} errText={ragState.text} detail={ragState.detail} />
+            return <StatusTile icon={Cube} label="语义搜索" ok={live && ragState.ok} okText={live ? ragState.text : '未连接'} errText={live ? ragState.text : '未连接'} detail={live ? ragState.detail : '实时连接已断开'} />
           })()}
-          <StatusTile icon={Robot} label="助手服务" ok={status.running} okText="运行" errText="停止"
-            detail={status.running ? `已运行 ${uptimeStr}` : ''} />
+          <StatusTile icon={Robot} label="助手服务" ok={running} okText="运行" errText={live ? '停止' : '未连接'}
+            detail={running ? `已运行 ${uptimeStr}` : live ? '' : '实时连接已断开'} />
         </div>
 
         {diagResult && (
@@ -609,7 +613,7 @@ export default function Dashboard({ status, onTabChange }) {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         {/* Keyword alerts */}
         <motion.div
-          initial={{ opacity: 0, y: 12 }}
+          initial={{ opacity: 1, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ ...spring, delay: 0.12, duration: 0.5 }}
           className="bg-bg-card border border-border-main rounded-2xl overflow-hidden flex flex-col"
@@ -627,7 +631,7 @@ export default function Dashboard({ status, onTabChange }) {
 
         {/* Scheduled tasks */}
         <motion.div
-          initial={{ opacity: 0, y: 12 }}
+          initial={{ opacity: 1, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ ...spring, delay: 0.16, duration: 0.5 }}
           className="bg-bg-card border border-border-main rounded-2xl overflow-hidden flex flex-col"
@@ -636,13 +640,13 @@ export default function Dashboard({ status, onTabChange }) {
           <div className="h-[2px] bg-brand-green/20 flex-shrink-0" />
           <div className="px-6 py-4 flex items-center gap-2 flex-shrink-0">
             <Clock size={15} className="text-text-muted" weight="fill" />
-            <h3 className="text-[14px] font-semibold text-text-main">定时任务</h3>
+            <h3 className="text-[14px] font-semibold text-text-main">采集与维护</h3>
           </div>
           <div className="px-6 pb-4 overflow-y-auto scrollbar-thin space-y-4">
             {/* 统计栏 */}
             <div className="flex items-center gap-4 px-4 py-3 bg-bg-raised/60 rounded-xl flex-wrap">
               <DashboardTaskStats url={`${API_BASE}/api/scheduled-tasks`} label="摘要任务" />
-              <DashboardTaskStats url={`${API_BASE}/api/scheduler/tasks`} label="Skill 定时任务" />
+              <DashboardTaskStats url={`${API_BASE}/api/scheduler/tasks`} label="技能定时采集" />
             </div>
 
             {/* OA/Digest 定时任务 */}
@@ -653,7 +657,7 @@ export default function Dashboard({ status, onTabChange }) {
             {/* CronScheduler skill 定时任务 */}
             <div>
               <p className="text-[11px] font-medium text-text-muted/70 uppercase tracking-wider mb-2 flex items-center gap-1">
-                <Cube size={12} /> Skill 定时任务
+                <Cube size={12} /> 技能定时采集
               </p>
               <CronTasksCard />
             </div>
@@ -685,7 +689,7 @@ function KeyExtractionBanner() {
 
   return (
     <motion.div
-      initial={{ opacity: 0, y: -6 }}
+      initial={{ opacity: 1, y: -6 }}
       animate={{ opacity: 1, y: 0 }}
       className="flex flex-col gap-3.5 p-5 rounded-xl border bg-status-error-soft border-status-error/20 text-status-error"
     >

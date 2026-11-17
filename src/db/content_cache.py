@@ -1230,7 +1230,7 @@ class ContentCache:
                 new = []
                 for item in items:
                     fid = item.get("local_id")
-                    if not fid or fid in existing:
+                    if not fid:
                         continue
                     cleaned = self._clean_fav(item)
                     if cleaned:
@@ -1246,6 +1246,36 @@ class ContentCache:
             _fail_task(task_center, tid, str(e))
         finally:
             self._end_full_sync("fav")
+
+    def rebuild_fav_cache(self, client, task_center=None) -> int:
+        """按最新解析规则重建收藏缓存，用于老数据回填。
+
+        不删表，只按 fav_id 覆盖写；位置、笔记、视频号的历史行会一起更新。
+        """
+        from src.wechat.wcdb_fav_reader import WcdbFavReader
+        reader = WcdbFavReader(client)
+        tid = _create_task(task_center, "cache_fav_rebuild", "", "收藏缓存重建")
+        total = 0
+        try:
+            for page in range(20):
+                items = reader.get_items(limit=200, offset=page * 200) or []
+                if not items:
+                    break
+                cleaned = []
+                for item in items:
+                    row = self._clean_fav(item)
+                    if row:
+                        cleaned.append(row)
+                if cleaned:
+                    self.batch_upsert("fav_cache", cleaned)
+                    total += len(cleaned)
+            logger.info("[CACHE] 收藏缓存重建完成: %d 条", total)
+            _complete_task(task_center, tid, f"收藏缓存重建: {total} 条")
+            return total
+        except Exception as e:
+            logger.warning("[CACHE] 收藏缓存重建失败: %s", e)
+            _fail_task(task_center, tid, str(e))
+            return total
 
     def sync_fav_incremental(self, client, task_center=None) -> int:
         """增量合并收藏。
@@ -1340,19 +1370,35 @@ class ContentCache:
         chat_records = item.get("chat_records", [])
         chat_records_json = json.dumps(chat_records, ensure_ascii=True) if chat_records else ""
 
-        # 展平 clean_text 用于 RAG 索引（含嵌套的聊天记录内容）
+        # 展平 clean_text 用于 RAG 索引（含嵌套的聊天记录内容、位置、视频号正文）
         clean_parts = []
         if title:
             clean_parts.append(title)
         if description:
             clean_parts.append(description)
+        location = item.get("location") or {}
+        if location:
+            for label in ("name", "address", "lng", "lat"):
+                value = str(location.get(label) or "").strip()
+                if value:
+                    clean_parts.append(value)
+        for video in (item.get("video_list") or []):
+            for label in ("nickname", "desc"):
+                value = str(video.get(label) or "").strip()
+                if value and value not in clean_parts:
+                    clean_parts.append(value)
         for record in (chat_records or []):
             sender = record.get("src_name", "")
             text = record.get("desc", "")
             if text:
                 clean_parts.append(f"{sender}: {text}" if sender else text)
-        clean_text = "\n".join(clean_parts)[:5000]
+        clean_text = "\n".join(clean_parts)[:50000]
 
+        images = item.get("image_list", []) or []
+        videos = item.get("video_list", []) or []
+        # 媒体用对象保存，前端可同时拿到图片和视频；没有视频时仍用旧数组格式，
+        # 保证历史缓存和旧界面继续能读。
+        media_payload = {"images": images, "videos": videos} if videos else images
         return {
             "fav_id": int(fav_id),
             "type": int(item.get("type", 0)),
@@ -1363,7 +1409,7 @@ class ContentCache:
             "from_user": str(item.get("from_user", "")),
             "update_time": int(item.get("update_time", 0)),
             "chat_records_json": chat_records_json,
-            "media_json": json.dumps(item.get("image_list", []), ensure_ascii=True),
+            "media_json": json.dumps(media_payload, ensure_ascii=True),
             "clean_text": clean_text,
             "cached_at": int(time.time()),
         }
@@ -1461,11 +1507,28 @@ class ContentCache:
             if source == "oa":
                 self._index_oa(rag_engine)
             elif source == "sns":
-                self._index_sns(rag_engine)
+                # 用户明确要求：朋友圈和视频号一样，不做任何知识库利用。
+                # 不索引、不检索，并把历史遗留的朋友圈块清掉。
+                self._purge_sns_index(rag_engine)
             elif source == "fav":
                 self._index_fav(rag_engine)
         except Exception as e:
             logger.warning("[CACHE] RAG 索引 %s 失败: %s", source, e)
+
+    def _purge_sns_index(self, rag):
+        """清掉历史朋友圈索引；只清一次，之后不再往里写。"""
+        if getattr(self, "_sns_index_purged", False):
+            return
+        try:
+            rows = self.query("SELECT post_id FROM sns_cache")
+            ids = [str(r["post_id"]) for r in rows]
+            store = getattr(rag, "_store", None)
+            if ids and store:
+                store.delete_by_source("sns", ids)
+                logger.info("[CACHE] 已清理朋友圈历史索引 %d 个来源", len(ids))
+            self._sns_index_purged = True
+        except Exception as e:
+            logger.warning("[CACHE] 清理朋友圈索引失败: %s", e)
 
     def reset_index_cursor(self, source: str):
         """重置增量游标，下次 index_to_rag 会全量重索引。"""
@@ -1488,21 +1551,27 @@ class ContentCache:
                 "FROM oa_cache WHERE title != ''"
             )
         from src.assistant.rag_types import Chunk
+        from src.journal.recall import chunk_text
         chunks = []
         max_cached_at = _cutoff
         for r in rows:
-            text = f"{r['title']} {r['digest']}"
-            if r['full_content']:
-                text += f" {r['full_content'][:2000]}"
-            chunks.append(Chunk(
-                id=f"oa_{r['url']}",
-                source="oa",
-                source_id=r['url'],
-                chat_id=r['source_name'],
-                sender_name=r['source_name'],
-                content=text[:3000],
-                created_at=str(r['pub_time']),
-            ))
+            # 公众号正文最多存 50000 字；按 400/80 分块，不能再只索引前 2000/3000 字。
+            text = f"{r['title']} {r['digest']} {r['full_content'] or ''}".strip()
+            parts = chunk_text(text)
+            for n, part in enumerate(parts, 1):
+                chunks.append(Chunk(
+                    id=f"oa_{r['url']}_p{n}",
+                    source="oa",
+                    source_id=r['url'],
+                    chat_id=r['source_name'],
+                    sender_name=r['source_name'],
+                    content=part,
+                    created_at=str(r['pub_time']),
+                    metadata={
+                        "title": (r['title'] or '')[:200],
+                        "link": r['url'] or "",
+                    },
+                ))
             _ca = r['cached_at'] or 0
             if _ca > max_cached_at:
                 max_cached_at = _ca
@@ -1527,19 +1596,22 @@ class ContentCache:
                 "FROM sns_cache WHERE clean_content != ''"
             )
         from src.assistant.rag_types import Chunk
+        from src.journal.recall import chunk_text
         chunks = []
         max_cached_at = _cutoff
         for r in rows:
             text = f"{r['nickname']}: {r['clean_content']}"
-            chunks.append(Chunk(
-                id=f"sns_{r['post_id']}",
-                source="sns",
-                source_id=r['post_id'],
-                chat_id=r['nickname'],
-                sender_name=r['nickname'],
-                content=text[:3000],
-                created_at=str(r['create_time']),
-            ))
+            for n, part in enumerate(chunk_text(text), 1):
+                chunks.append(Chunk(
+                    id=f"sns_{r['post_id']}_p{n}",
+                    source="sns",
+                    source_id=r['post_id'],
+                    chat_id=r['nickname'],
+                    sender_name=r['nickname'],
+                    content=part,
+                    created_at=str(r['create_time']),
+                    metadata={"title": (r['nickname'] or '')[:100]},
+                ))
             _ca = r['cached_at'] or 0
             if _ca > max_cached_at:
                 max_cached_at = _ca
@@ -1549,32 +1621,69 @@ class ContentCache:
             self._save_index_cursor()
 
     def _index_fav(self, rag):
-        """索引收藏到 ChromaDB（增量）。"""
+        """索引收藏到 ChromaDB（增量）。
+
+        视频号/视频收藏不进入知识库：不索引、不检索，并清掉历史遗留块。
+        """
+        # 清掉历史索引里的视频收藏块，避免旧数据还能被搜出来。
+        if not getattr(self, "_video_fav_purged", False):
+            try:
+                video_rows = self.query(
+                    "SELECT fav_id FROM fav_cache WHERE type IN (4, 20)"
+                )
+                ids = [str(r["fav_id"]) for r in video_rows]
+                store = getattr(rag, "_store", None)
+                if ids and store:
+                    store.delete_by_source("fav", ids)
+                    logger.info("[CACHE] 已清理收藏视频号/视频历史索引 %d 条", len(ids))
+                self._video_fav_purged = True
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[CACHE] 清理收藏视频索引失败（继续索引）: %s", e)
+
         _cutoff = self._last_indexed_at["fav"]
         if _cutoff > 0:
             rows = self.query(
-                "SELECT fav_id, clean_text, type_name, update_time, cached_at "
-                "FROM fav_cache WHERE clean_text != '' AND cached_at > ?",
+                "SELECT fav_id, clean_text, type_name, update_time, cached_at,"
+                " title, description, link"
+                " FROM fav_cache WHERE clean_text != ''"
+                " AND type NOT IN (4, 20) AND cached_at > ?",
                 [_cutoff],
             )
         else:
             rows = self.query(
-                "SELECT fav_id, clean_text, type_name, update_time, cached_at "
-                "FROM fav_cache WHERE clean_text != ''"
+                "SELECT fav_id, clean_text, type_name, update_time, cached_at,"
+                " title, description, link"
+                " FROM fav_cache WHERE clean_text != ''"
+                " AND type NOT IN (4, 20)"
             )
         from src.assistant.rag_types import Chunk
+        from src.journal.recall import chunk_text
         chunks = []
         max_cached_at = _cutoff
         for r in rows:
-            chunks.append(Chunk(
-                id=f"fav_{r['fav_id']}",
-                source="fav",
-                source_id=str(r['fav_id']),
-                chat_id=r['type_name'],
-                sender_name=r['type_name'],
-                content=r['clean_text'][:3000],
-                created_at=str(r['update_time']),
-            ))
+            body = r['clean_text'] or ''
+            link = (r['link'] or '').strip()
+            # 位置收藏的坐标在正文里，但高德链接不在；把链接也写进检索块，
+            # 用户问“把某地的位置发给我”时才能把链接带出来。
+            content = body
+            if link and link not in content:
+                content += "\n链接：" + link
+            for n, part in enumerate(chunk_text(content), 1):
+                chunks.append(Chunk(
+                    id=f"fav_{r['fav_id']}_p{n}",
+                    source="fav",
+                    source_id=str(r['fav_id']),
+                    chat_id=r['type_name'],
+                    sender_name=r['type_name'],
+                    content=part,
+                    created_at=str(r['update_time']),
+                    metadata={
+                        "kind": r['type_name'] or "收藏",
+                        "title": (r['title'] or '')[:200],
+                        "description": (r['description'] or '')[:1800],
+                        "link": link,
+                    },
+                ))
             _ca = r['cached_at'] or 0
             if _ca > max_cached_at:
                 max_cached_at = _ca
@@ -1598,6 +1707,18 @@ class ContentCache:
             if rag_status and job_key:
                 rag_status.job(job_key, label=label, total=len(chunks),
                                completed=0, state="running")
+            # 先删同一来源的同一条旧块：旧版每条只存一个 3000 字块，
+            # 新版按 400 字分块，不删会留下新旧两份、检索时重复。
+            store = getattr(rag, "_store", None)
+            if store:
+                by_source: dict[str, list[str]] = {}
+                for c in chunks:
+                    by_source.setdefault(c.source, []).append(str(c.source_id))
+                for source, ids in by_source.items():
+                    try:
+                        store.delete_by_source(source, list(dict.fromkeys(ids)))
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("[CACHE] 删除 %s 旧索引失败: %s", source, e)
             for offset in range(0, len(chunks), 64):
                 batch = chunks[offset:offset + 64]
                 embeddings = rag._embedder.encode([c.content for c in batch])

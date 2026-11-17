@@ -489,29 +489,7 @@ class ToolExecutor:
             handler=self._handle_search_oa_articles,
         )
 
-        # ── search_moments（语义搜索朋友圈）─────────────────────────
-        r.register(
-            name="search_moments",
-            description="语义搜索朋友圈历史内容。当用户想找之前看过的朋友圈、"
-                       "某个朋友发的动态，或者某个话题的朋友圈时调用。"
-                       "输入自然语言查询，返回相关的朋友圈内容。",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "搜索内容，用自然语言描述你想找的朋友圈内容",
-                    },
-                    "top_k": {
-                        "type": "integer",
-                        "description": "返回结果数量，默认 5",
-                        "default": 5,
-                    },
-                },
-                "required": ["query"],
-            },
-            handler=self._handle_search_moments,
-        )
+        # ── 朋友圈按用户要求与视频号一样不进入知识库，不注册搜索工具 ──
 
         # ── search_favorites（语义搜索收藏）─────────────────────────
         r.register(
@@ -535,6 +513,170 @@ class ToolExecutor:
                 "required": ["query"],
             },
             handler=self._handle_search_favorites,
+        )
+
+        # ── find_saved_location（按人名/收藏标签找位置）─────────────
+        r.register(
+            name="find_saved_location",
+            description="按人名或收藏标签查找已经保存的位置：固定按日记、收藏标签、"
+                       "聊天记录的顺序查，返回地点、时间和高德地图链接。用户问"
+                       "'把某某的位置发给我'、'某某在哪'、'导航到某某的位置'、"
+                       "'某人标签里的地址'时先调这个。这不是实时定位，只查日记、"
+                       "收藏和聊天里已有的位置。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "人名或收藏标签名，例如'大姚'",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "每类最多返回几条，默认 3",
+                        "default": 3,
+                    },
+                },
+                "required": ["name"],
+            },
+            handler=self._handle_find_saved_location,
+        )
+
+        # ── recall_my_memory（回忆"我自己记过/收藏过什么"）──────────
+        r.register(
+            name="recall_my_memory",
+            description="回忆用户本人记过、收藏过的东西：语音日记、发到文件传输助手的"
+                       "视频号/公众号分享、微信收藏。固定按日记、收藏、聊天记录的顺序查。"
+                       "当用户问'我以前记过什么'、"
+                       "'我收藏过什么'、'我是不是跟你说过…'、'辣椒红品相判断标准'"
+                       "这类'我以前记下的方法/标准'，或者问'有什么好吃的/"
+                       "好玩的/值得看'、希望被提醒旧记录时，先调这个工具查一遍再答。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "要回忆的主题，用自然语言，例如'什么好吃''手机操控'",
+                    },
+                    "top_k": {
+                        "type": "integer",
+                        "description": "返回结果数量，默认 5",
+                        "default": 5,
+                    },
+                },
+                "required": ["query"],
+            },
+            handler=self._handle_recall_my_memory,
+        )
+
+        # ── list_journal_reminders（查看在跑的提醒）────────────────
+        r.register(
+            name="list_journal_reminders",
+            description="查看日记助手里正在跑的生活提醒（不是采集与维护任务）。"
+                       "当用户问'我现在有什么提醒'、'在跑什么提醒'、"
+                       "'我的定时任务有哪些'且语境是日记/喂鸟/生活提醒时调用。",
+            parameters={"type": "object", "properties": {}},
+            handler=self._handle_list_journal_reminders,
+        )
+
+        # ── update_journal_reminder（修改在跑的提醒）────────────────
+        r.register(
+            name="update_journal_reminder",
+            description="修改一条正在跑的日记提醒，可改每天几次/几点、一共几天、"
+                       "起始日期和内容。用户说'把喂鱼肝油改成每天两次一共七天'、"
+                       "'把提醒改成每天8点和17点'时调用。先调 list_journal_reminders "
+                       "确认目标；只改用户明确说的字段，没说到的保持原样。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "chain_id": {"type": "integer", "description": "提醒编号，从列表工具拿到"},
+                    "title": {"type": "string", "description": "提醒内容，可选"},
+                    "days": {"type": "integer", "description": "一共几天，可选，1-366"},
+                    "daily_times": {"type": "string",
+                                    "description": "每天时刻，逗号分隔，如 08:00,17:00；可选"},
+                    "start_date": {"type": "string", "description": "起始日期 YYYY-MM-DD，可选"},
+                },
+            },
+            handler=self._handle_update_journal_reminder,
+        )
+
+        # ── create_journal_reminder（新建生活提醒，先确认）──────────
+        r.register(
+            name="create_journal_reminder",
+            description="为用户新建一条生活提醒（喂鸟、喂食、日常事项）。"
+                       "调用后不会立刻建，只返回一句确认问句；用户回“确认”后"
+                       "必须再调 confirm_journal_reminder 才真正建。"
+                       "用户原话里带“明天早上9点/每天两次/一共七天”时，把原话完整传进 text。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string",
+                             "description": "用户原话，例如“明天早上9点通知我给红袍鸟房喂食”"},
+                },
+                "required": ["text"],
+            },
+            handler=self._handle_create_journal_reminder,
+        )
+
+        # ── delete_journal_reminder（删除生活提醒，先确认）──────────
+        r.register(
+            name="delete_journal_reminder",
+            description="删除一条正在跑的生活提醒。调用后不会立刻删，只返回确认问句；"
+                       "用户回“确认”后再调 confirm_journal_reminder。"
+                       "先用 list_journal_reminders 找到编号或名字。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "chain_id": {"type": "integer", "description": "提醒编号，可选"},
+                    "title": {"type": "string", "description": "提醒内容，可选"},
+                },
+            },
+            handler=self._handle_delete_journal_reminder,
+        )
+
+        # ── confirm_journal_reminder（确认新建/删除）──────────────
+        r.register(
+            name="confirm_journal_reminder",
+            description="用户对“新建/删除生活提醒”的确认问句回了明确答复后调用；"
+                       "accepted=true 表示确认执行，false 表示取消。没有待确认事项时不要调用。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "accepted": {"type": "boolean",
+                                 "description": "true=确认，false=取消"},
+                },
+                "required": ["accepted"],
+            },
+            handler=self._handle_confirm_journal_reminder,
+        )
+
+        # ── summarize_chat_with（总结我和某人的聊天，含语音转文字）──
+        r.register(
+            name="summarize_chat_with",
+            description="总结用户和某个联系人在一段时间内的聊天（文字消息直接用，"
+                       "语音消息先转成文字再一起总结）。当用户问'我跟某人最近聊了什么'、"
+                       "'帮我看下和谁谁这两天说了啥'、'把这段聊天总结一下'时调用。"
+                       "返回：聊了几件事、来龙去脉、对方要求、你答应的事、未定事项。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "联系人备注或昵称，例如'妈妈''欢欢玉鸟'",
+                    },
+                    "days": {
+                        "type": "integer",
+                        "description": "看最近多少天，默认 7",
+                        "default": 7,
+                    },
+                    "transcribe_voice": {
+                        "type": "boolean",
+                        "description": "是否把语音转成文字，默认 true",
+                        "default": True,
+                    },
+                },
+                "required": ["name"],
+            },
+            handler=self._handle_summarize_chat_with,
         )
 
         # ── query_my_feed（查"系统推送给我的消息"历史）──────────────
@@ -648,7 +790,9 @@ class ToolExecutor:
         )
         r.register(
             name="list_crons",
-            description="查看所有定时任务列表。",
+            description="查看采集与维护任务列表（群摘要、榜单、自动推送）。"
+                        "如果用户问的是生活提醒（喂鸟、吃药、喝水等），"
+                        "不要用这个，改用 list_journal_reminders。",
             parameters={"type": "object", "properties": {}},
             handler=self._handle_list_crons,
         )
@@ -1547,7 +1691,7 @@ class ToolExecutor:
             # 群名：优先用 display_name，兜底用 chat_id 后 8 位
             group = group_names.get(chunk.chat_id) or chunk.chat_id[-8:]
             lines.append(
-                f"{i}. [{group} {ts} {sender}] {chunk.content[:200]}"
+                f"{i}. [{group} {ts} {sender}] {chunk.content[:800]}"
             )
 
         return "\n".join(lines)
@@ -1608,7 +1752,7 @@ class ToolExecutor:
                 ts = ts[5:16]
             sender = chunk.sender_name or "好友"
             lines.append(
-                f"{i}. [{sender} {ts}] {chunk.content[:200]}"
+                f"{i}. [{sender} {ts}] {chunk.content[:800]}"
             )
         return "\n".join(lines)
 
@@ -1630,6 +1774,10 @@ class ToolExecutor:
         if not results:
             return f"没有找到与「{query}」相关的收藏内容。"
         lines = [f"找到 {len(results)} 条相关收藏："]
+        try:
+            from src.journal.favorites import favorite_details
+        except Exception:  # noqa: BLE001
+            favorite_details = lambda _x: None
         for i, r in enumerate(results, 1):
             chunk = r.chunk
             ts = chunk.created_at
@@ -1637,11 +1785,210 @@ class ToolExecutor:
                 ts = ts[5:16]
             sender = chunk.sender_name or "收藏"
             lines.append(
-                f"{i}. [{sender} {ts}] {chunk.content[:200]}"
+                f"{i}. [{sender} {ts}] {chunk.content[:800]}"
             )
+            detail = favorite_details(chunk.source_id)
+            if detail and detail.get("link"):
+                if detail.get("type") == 6:
+                    lines.append(f"   高德地图：{detail['link']}")
+                else:
+                    lines.append(f"   原链接：{detail['link']}")
         return "\n".join(lines)
 
-    # ── query_my_feed（系统推送给用户本人的消息流）──────────────────
+    # ── find_saved_location（按人名/收藏标签找位置）────────────────
+
+    def _handle_find_saved_location(self, name: str, limit: int = 3) -> str:
+        """查收藏标签和聊天记录里保存的位置。"""
+        if not name or not name.strip():
+            return "要查谁的位置？给我一个人名或收藏标签名。"
+        try:
+            from src.journal.places import find_locations, format_locations
+            result = find_locations(name.strip(), limit=max(1, int(limit or 3)))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("find_saved_location failed: %s", e)
+            return "查位置失败：%s" % e
+        return format_locations(result, limit=max(1, int(limit or 3)))
+
+    # ── recall_my_memory（回忆日记 + 微信收藏）──────────────────────
+
+    def _handle_recall_my_memory(self, query: str, top_k: int = 5) -> str:
+        """先查"我的日记/分享"记忆库，再查微信收藏，合成一段人话。"""
+        parts: list[str] = []
+
+        try:
+            from src.journal.recall import recall
+            hits = recall(query, top_k=top_k)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("recall_my_memory 日记检索失败: %s", e)
+            hits = []
+
+        if hits:
+            parts.append("你记过的（%d 条最相关）：" % len(hits))
+            for i, h in enumerate(hits, 1):
+                parts.append("  %d. %s %s｜%s" % (
+                    i, h["date"], h["kind"], h["text"][:800]))
+
+        if self._rag:
+            try:
+                favs = self._rag.search(
+                    query=query, top_k=top_k * 4, final_k=top_k,
+                    where={"source": "fav"},
+                )
+                if favs:
+                    parts.append("你微信收藏里的（%d 条）：" % len(favs))
+                    try:
+                        from src.journal.favorites import favorite_details
+                    except Exception:  # noqa: BLE001
+                        favorite_details = lambda _x: None
+                    for i, r in enumerate(favs, 1):
+                        ts = (r.chunk.created_at or "")[:16]
+                        parts.append("  %d. %s｜%s" % (i, ts, r.chunk.content[:800]))
+                        detail = favorite_details(r.chunk.source_id)
+                        if detail and detail.get("link"):
+                            if detail.get("type") == 6:
+                                parts.append("     高德地图：%s" % detail["link"])
+                            else:
+                                parts.append("     原链接：%s" % detail["link"])
+            except Exception as e:  # noqa: BLE001
+                logger.warning("recall_my_memory 收藏检索失败: %s", e)
+
+        # 最后才查聊天记录；日记、收藏、聊天都有内容时，播报也按这个顺序。
+        if self._rag:
+            try:
+                chat_answer = self._handle_search_chat_history(
+                    query, top_k=min(3, max(1, int(top_k or 3))))
+            except Exception as e:  # noqa: BLE001
+                logger.warning("recall_my_memory 聊天记录检索失败: %s", e)
+                chat_answer = ""
+            if chat_answer and not chat_answer.startswith("没有找到"):
+                parts.append("聊天记录里的（最后查）：")
+                parts.append(chat_answer)
+        return "\n".join(parts) if parts else (
+            "你这边没有记过、收藏过或聊过跟「%s」有关的东西。"
+            "（记录方式：把想留的内容发到文件传输助手，说一句'记录起来'）" % query
+        )
+
+    def _handle_list_journal_reminders(self) -> str:
+        """列出日记助手里在跑的提醒。"""
+        try:
+            from src.journal.store import JournalStore
+            rows = [r for r in JournalStore().chains()
+                    if r["status"] in ("active", "pending_time")]
+        except Exception as e:  # noqa: BLE001
+            logger.warning("list_journal_reminders failed: %s", e)
+            return "读取提醒失败：%s" % e
+        if not rows:
+            return "现在没有在跑的生活提醒。"
+        lines = []
+        for r in rows:
+            times = (r["daily_time"] or "时刻待定").replace(",", "、")
+            lines.append("%d. %s：%s 起，共 %d 天，每天 %s" % (
+                r["id"], r["title"], r["start_date"], r["days"], times))
+        return "生活提醒（在跑的，不是采集与维护任务）：\n" + "\n".join(lines)
+
+    def _handle_update_journal_reminder(self, chain_id: int | None = None,
+                                        title: str | None = None,
+                                        days: int | None = None,
+                                        daily_times: str | None = None,
+                                        start_date: str | None = None) -> str:
+        """按编号或标题改一条在跑的提醒。"""
+        try:
+            from src.journal.store import JournalStore
+            store = JournalStore()
+            rows = [r for r in store.chains()
+                    if r["status"] in ("active", "pending_time")]
+            target = None
+            if chain_id:
+                target = next((r for r in rows if int(r["id"]) == int(chain_id)), None)
+            if target is None and title:
+                wanted = (title or "").strip()
+                target = next((r for r in rows if wanted in (r["title"] or "")
+                               or (r["title"] or "") in wanted), None)
+            if target is None and len(rows) == 1:
+                target = rows[0]
+            if target is None:
+                names = "、".join(r["title"] for r in rows) or "（没有在跑的提醒）"
+                return "没对上要改哪一条。现在在跑的是：%s。请说提醒名字或编号。" % names
+            updated = store.update_chain(
+                int(target["id"]), title=title if title else None,
+                start_date=start_date if start_date else None,
+                days=days, daily_time=daily_times if daily_times else None,
+            )
+            times = (updated.get("daily_time") or "时刻待定").replace(",", "、")
+            return ("已改好：%s，%s 起，共 %d 天。每天 %s。"
+                    "从今天起按新计划发，不补发过去。" % (
+                        updated["title"], updated["start_date"],
+                        updated["days"], times))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("update_journal_reminder failed: %s", e)
+            return "改提醒失败：%s" % e
+
+    def _handle_create_journal_reminder(self, text: str) -> str:
+        """新建生活提醒：只挂确认问句，不直接建。"""
+        try:
+            from src.journal.remind import JournalService
+            svc = JournalService(store=None, push=lambda _t: {"success": True})
+            r = svc.propose_create(text, chat_id="voice", say=False)
+            return r.get("reply") or "没听出要建什么提醒。"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("create_journal_reminder failed: %s", e)
+            return "新建提醒失败：%s" % e
+
+    def _handle_delete_journal_reminder(self, chain_id: int | None = None,
+                                        title: str | None = None) -> str:
+        """删除生活提醒：只挂确认问句，不直接删。"""
+        try:
+            from src.journal.remind import JournalService
+            svc = JournalService(store=None, push=lambda _t: {"success": True})
+            target = title or ""
+            if chain_id:
+                target = str(chain_id)
+                # 有编号时直接按编号找，不靠标题模糊匹配
+                rows = svc._running_rows()
+                hit = next((x for x in rows if int(x["id"]) == int(chain_id)), None)
+                if hit is None:
+                    return "没找到编号 %s 的生活提醒。" % chain_id
+                return svc.propose_delete(hit["title"], chat_id="voice", say=False).get("reply", "")
+            r = svc.propose_delete(target, chat_id="voice", say=False)
+            return r.get("reply") or "没找到要删的提醒。"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("delete_journal_reminder failed: %s", e)
+            return "删除提醒失败：%s" % e
+
+    def _handle_confirm_journal_reminder(self, accepted: bool = True) -> str:
+        """用户确认/取消后，执行待确认的新建或删除。"""
+        try:
+            from src.journal.remind import JournalService
+            svc = JournalService(store=None, push=lambda _t: {"success": True})
+            r = svc.confirm_pending("确认" if accepted else "取消",
+                                    chat_id="voice", say=False)
+            if not r:
+                return "现在没有等你确认的新建或删除。"
+            return r.get("reply") or ""
+        except Exception as e:  # noqa: BLE001
+            logger.warning("confirm_journal_reminder failed: %s", e)
+            return "确认提醒失败：%s" % e
+
+    # ── summarize_chat_with（我和某人聊了什么）──────────────────────
+
+    def _handle_summarize_chat_with(self, name: str, days: int = 7,
+                                    transcribe_voice: bool = True) -> str:
+        """拉会话流水（语音先转文字），交给大模型出结构化总结。"""
+        try:
+            from src.assistant.chat_summary import summarize_chat
+            r = summarize_chat(name, days=days, transcribe=transcribe_voice,
+                              max_voices=30, save=True)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("summarize_chat_with failed: %s", e)
+            return "总结失败：%s" % e
+        if not r.get("ok"):
+            return r.get("error") or "总结失败"
+        head = ("和「%s」最近 %s 天的 %d 条消息（其中语音 %d 条已转文字，%d 条未转）"
+                % (r["chat"], days, r["rows"], r["voices"], r["skipped_voices"]))
+        tail = ("\n\n（原始总结已存到：%s）" % r["path"]) if r.get("path") else ""
+        return head + "\n\n" + r["summary"] + tail
+
+
 
     # category 参数 → outbox type 词表映射
     _FEED_CATEGORY_MAP = {
@@ -1838,8 +2185,8 @@ class ToolExecutor:
         jobs = self._cron_scheduler.list_jobs()
         logger.info("[CronTool] list_crons — 共 %d 个任务", len(jobs))
         if not jobs:
-            return "暂无定时任务"
-        lines = [f"📋 定时任务 ({len(jobs)} 个):"]
+            return "暂无采集与维护任务（群摘要、榜单、自动推送）。生活提醒请用 list_journal_reminders。"
+        lines = [f"采集与维护任务（群摘要、榜单、自动推送），共 {len(jobs)} 个："]
         for j in jobs:
             enabled = "🟢" if j.get("enabled") else "🔴"
             lines.append(

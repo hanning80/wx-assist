@@ -7,10 +7,13 @@ Base URL: https://api.deepseek.com
 Docs: https://platform.deepseek.com/api-docs
 """
 
+import csv
 import json
 import logging
 import os
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Iterator, Optional
 
 from openai import OpenAI, RateLimitError, APIConnectionError, APIStatusError
@@ -24,6 +27,63 @@ logger = logging.getLogger(__name__)
 
 # DeepSeek API base URL
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+# 用量账本：每次调用的 token 消耗都落盘，用户随时能算钱，不再是黑盒
+USAGE_CSV = Path(__file__).resolve().parents[2] / "data" / "ai_usage.csv"
+
+
+def _record_usage(model: str, tag: str, response) -> None:
+    """把这次调用的 token 用量记一行。取不到就跳过，绝不影响主流程。
+
+    测试里的假响应也带 usage（几十万 token），如果照记就会把账本写成
+    假的几百块。跑测试时直接跳过。
+    """
+    try:
+        if os.environ.get("PYTEST_CURRENT_TEST"):
+            return
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return
+        pt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        ct = int(getattr(usage, "completion_tokens", 0) or 0)
+        new_file = not USAGE_CSV.exists()
+        USAGE_CSV.parent.mkdir(parents=True, exist_ok=True)
+        with USAGE_CSV.open("a", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            if new_file:
+                w.writerow(["时间", "模型", "用途", "输入tokens", "输出tokens"])
+            w.writerow([datetime.now().isoformat(timespec="seconds"), model, tag, pt, ct])
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("用量记账失败: %s", exc)
+
+
+_ENV_CACHE: dict = {"mtime": None, "values": {}}
+
+
+def _env_value(key: str, default: str = "") -> str:
+    """读 .env 的值（带 mtime 缓存），这样后台改了开关，工作线程不用重启也能生效。"""
+    path = Path(os.environ.get("WEBOT_ENV_FILE") or
+                Path(__file__).resolve().parents[2] / ".env")
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return os.environ.get(key, default)
+    if _ENV_CACHE["mtime"] != mtime:
+        vals = {}
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                s = line.strip()
+                if s and not s.startswith("#") and "=" in s:
+                    k, v = s.split("=", 1)
+                    vals[k.strip()] = v.strip()
+        except OSError:
+            vals = {}
+        _ENV_CACHE.update({"mtime": mtime, "values": vals})
+    return _ENV_CACHE["values"].get(key, os.environ.get(key, default))
+
+
+def _thinking_off() -> bool:
+    """总开关：AI_THINKING=0/false/off 时，调用直接带 thinking disabled，省掉思考 token。"""
+    return _env_value("AI_THINKING", "1").strip().lower() in ("0", "false", "off", "no")
 
 
 class OpenAICompatSummarizer(AbstractSummarizer):
@@ -86,6 +146,7 @@ class OpenAICompatSummarizer(AbstractSummarizer):
             event_hooks={"request": [_fix_user_agent]},
         )
         self.client = OpenAI(api_key=api_key, base_url=base_url, http_client=http_client)
+        self.base_url = base_url
         self.model = model
         self.chunk_size = chunk_size
         self.max_retries = max_retries
@@ -188,7 +249,19 @@ class OpenAICompatSummarizer(AbstractSummarizer):
         if timeout:
             params["timeout"] = self._request_timeout(timeout)
 
+        # 后台把"思考模式"关掉时，首次调用就禁用，不等重试。
+        # 只对 DeepSeek 生效：别的 OpenAI 兼容中转不认 thinking 这个字段，
+        # 硬塞会直接被 400 顶回来，变成"关个开关反而全挂"。
+        thinking_toggle_supported = (
+            "deepseek" in (self.base_url or "").lower()
+            or "deepseek" in (self.model or "").lower()
+        )
+        if thinking_toggle_supported and _thinking_off():
+            params["extra_body"] = {"thinking": {"type": "disabled"}}
+            log_tag = log_tag + "-NOTHINK"
+
         response = self.client.chat.completions.create(**params)
+        _record_usage(self.model, log_tag, response)
         choice = self._extract_choice(response, log_tag=log_tag)
         content = choice.message.content
         reasoning = getattr(choice.message, 'reasoning_content', None)
@@ -212,6 +285,7 @@ class OpenAICompatSummarizer(AbstractSummarizer):
                 if timeout:
                     retry_kwargs["timeout"] = self._request_timeout(timeout)
                 response = self.client.chat.completions.create(**retry_kwargs)
+                _record_usage(self.model, log_tag + "-RETRY1", response)
                 retry_content = self._extract_choice(
                     response, log_tag=log_tag + "-RETRY1").message.content
                 if retry_content:
@@ -238,6 +312,7 @@ class OpenAICompatSummarizer(AbstractSummarizer):
                 if timeout:
                     retry_params["timeout"] = self._request_timeout(timeout)
                 response = self.client.chat.completions.create(**retry_params)
+                _record_usage(self.model, log_tag + "-RETRY2", response)
                 retry_content = self._extract_choice(
                     response, log_tag=log_tag + "-RETRY2").message.content
                 if retry_content:

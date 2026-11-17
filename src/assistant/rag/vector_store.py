@@ -8,6 +8,7 @@
 
 import logging
 import multiprocessing
+from datetime import datetime
 from pathlib import Path
 import threading
 from abc import ABC, abstractmethod
@@ -19,6 +20,27 @@ from .models import Chunk, SearchResult
 from .chroma_worker import run_chroma_worker
 
 logger = logging.getLogger(__name__)
+
+
+def _created_ts(value) -> int:
+    """把各种时间写法统一成秒级时间戳。
+
+    聊天/收藏/公众号多数存的是秒级数字，日记和附件存的是 ISO 字符串。
+    旧实现只认纯数字，ISO 时间一律落成 0；清理线程会把 0 当成“几十天前”
+    的旧块删掉，等于每小时清空一次日记索引。这里两种都认。
+    """
+    text = str(value or "").strip()
+    if not text:
+        return 0
+    if text.isdigit():
+        try:
+            return int(text)
+        except ValueError:
+            return 0
+    try:
+        return int(datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp())
+    except (TypeError, ValueError, OSError):
+        return 0
 
 
 class VectorStore(ABC):
@@ -181,21 +203,30 @@ class ChromaStore(VectorStore):
     UPSERT_BATCH = 512
 
     def add(self, chunks: list[Chunk], embeddings: np.ndarray):
+        def _meta(c: Chunk) -> dict:
+            meta = {
+                "source": c.source or "",
+                "source_id": str(c.source_id or ""),
+                "chat_id": c.chat_id or "",
+                "sender_name": c.sender_name or "",
+                "created_at": c.created_at or "",
+                "created_at_ts": _created_ts(c.created_at),
+                "content": c.content or "",
+            }
+            # 各数据源自定义字段（date/kind/title 等）也带上；Chroma 只接受标量
+            extra = c.metadata if isinstance(c.metadata, dict) else {}
+            for k, v in extra.items():
+                if isinstance(v, (str, int, float, bool)) and k not in meta:
+                    meta[str(k)] = v
+            return meta
+
         # Bound IPC payloads and Chroma batches, and make retries idempotent.
         for offset in range(0, len(chunks), self.UPSERT_BATCH):
             batch = chunks[offset:offset + self.UPSERT_BATCH]
             self._request("upsert", {
                 "ids": [c.id for c in batch],
                 "embeddings": embeddings[offset:offset + self.UPSERT_BATCH].tolist(),
-                "metadatas": [{
-                    "source": c.source,
-                    "source_id": c.source_id,
-                    "chat_id": c.chat_id,
-                    "sender_name": c.sender_name,
-                    "created_at": c.created_at,
-                    "created_at_ts": int(c.created_at) if c.created_at and c.created_at.isdigit() else 0,
-                    "content": c.content,
-                } for c in batch],
+                "metadatas": [_meta(c) for c in batch],
             })
 
     def search(self, query_emb: np.ndarray, top_k: int,
@@ -220,22 +251,31 @@ class ChromaStore(VectorStore):
         search_results = []
         for i in range(len(ids)):
             meta = metadatas[i] if i < len(metadatas) else {}
+            if not isinstance(meta, dict):
+                meta = {}
             # content 优先从 metadata 取（新格式），兼容旧格式（documents）
             content = meta.get("content")
             if not content and i < len(documents):
                 content = documents[i]
             chunk = Chunk(
                 id=ids[i],
-                source=meta.get("source", ""),
-                source_id=meta.get("source_id", ""),
-                chat_id=meta.get("chat_id", ""),
-                sender_name=meta.get("sender_name", ""),
+                source=meta.get("source", "") or "",
+                source_id=str(meta.get("source_id", "") or ""),
+                chat_id=meta.get("chat_id", "") or "",
+                sender_name=meta.get("sender_name", "") or "",
                 content=content or "",
-                created_at=meta.get("created_at", ""),
+                created_at=meta.get("created_at", "") or "",
+                metadata={k: v for k, v in meta.items()
+                          if k not in ("content", "source", "source_id", "chat_id",
+                                       "sender_name", "created_at", "created_at_ts")},
             )
-            score = float(distances[i]) if i < len(distances) else 0.0
+            try:
+                distance = float(distances[i]) if i < len(distances) else 1.0
+            except (TypeError, ValueError):
+                distance = 1.0
             # ChromaDB 返回的是距离，余弦距离 ≈ 1 - 余弦相似度
-            search_results.append(SearchResult(chunk=chunk, score=1.0 - score))
+            search_results.append(SearchResult(
+                chunk=chunk, score=max(0.0, min(1.0, 1.0 - distance))))
 
         return search_results
 

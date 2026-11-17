@@ -1511,7 +1511,7 @@ export default function OATab() {
   }
 
   return (
-    <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}>
+    <motion.div initial={{ opacity: 1, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}>
       {/* Header */}
       <div className="mb-5">
         <div className="flex items-center gap-2.5 mb-1">
@@ -1598,7 +1598,7 @@ export default function OATab() {
       <AnimatePresence>
         {selectedAccount && (
           <motion.div
-            initial={{ opacity: 0, height: 0 }}
+            initial={{ opacity: 1, height: 0 }}
             animate={{ opacity: 1, height: 'auto' }}
             exit={{ opacity: 0, height: 0 }}
             className="mb-5 overflow-hidden"
@@ -1679,7 +1679,7 @@ export default function OATab() {
         <AnimatePresence>
           {searchResults.length > 0 ? (
             <motion.div
-              initial={{ opacity: 0, y: -8 }}
+              initial={{ opacity: 1, y: -8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
               className="mb-4"
@@ -1729,7 +1729,7 @@ export default function OATab() {
             <motion.div
               key={editingMonitor?.id || 'new'}
               ref={monitorEditorRef}
-              initial={{ opacity: 0, y: -8 }}
+              initial={{ opacity: 1, y: -8 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
               className="mb-3"
@@ -1801,7 +1801,7 @@ export default function OATab() {
             <motion.div
               key={editingGroup?.id || 'new'}
               ref={editorRef}
-              initial={{ opacity: 0, y: -12 }}
+              initial={{ opacity: 1, y: -12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -12 }}
               className="mb-6"
@@ -1994,7 +1994,7 @@ export default function OATab() {
       {/* Running digest indicator */}
       {digestRunning && (
         <motion.div
-          initial={{ opacity: 0, y: 12 }}
+          initial={{ opacity: 1, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
           className="fixed bottom-6 right-6 px-4 py-3 rounded-xl bg-brand-green-light border border-brand-green/30 text-brand-green text-sm font-medium flex items-center gap-2 shadow-lg cursor-pointer"
           onClick={() => window.dispatchEvent(new CustomEvent('open-task-center'))}

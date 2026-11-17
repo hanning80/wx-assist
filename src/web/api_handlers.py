@@ -415,13 +415,19 @@ def handle_fav_list(params, config: AssistantConfig):
                 for r in cached:
                     chat_records = json.loads(r["chat_records_json"]) if r["chat_records_json"] else []
                     media_json_data = json.loads(r["media_json"]) if r["media_json"] else []
-                    # content = description（与 WCDB 路径相同的逻辑）
-                    content = r["description"] or ""
+                    if isinstance(media_json_data, dict):
+                        images_src = media_json_data.get("images") or []
+                        videos = media_json_data.get("videos") or []
+                    else:
+                        images_src = media_json_data or []
+                        videos = []
+                    # content 先取正文，老缓存没有正文时退回 clean_text（笔记/位置/视频号都靠它）
+                    content = r["description"] or r["clean_text"] or ""
                     # images 从 media_json 提取（与 _extract_fav_image_info 逻辑一致：类型 14/3 跳过顶层图片）
                     ftype = int(r["type"])
                     images = []
                     if ftype not in (14, 3):
-                        for m in media_json_data:
+                        for m in images_src:
                             dataurl = m.get("dataurl") or m.get("url", "")
                             if dataurl:
                                 if isinstance(dataurl, str) and dataurl.startswith(("305", "306", "307")):
@@ -448,6 +454,7 @@ def handle_fav_list(params, config: AssistantConfig):
                         "from_user": r["from_user"],
                         "link": r["link"],
                         "images": images,
+                        "videos": videos,
                         "chat_records": chat_records,
                         "content_raw": "",
                         "tags": fav_tags.get(str(r["fav_id"]), []),
@@ -489,11 +496,20 @@ def handle_fav_list(params, config: AssistantConfig):
             # content: 如果有 description 用它，否则只有非XML的纯文本才显示
             raw_content = item.get("content_raw", "")
             desc = item.get("description", "")
+            # 笔记/位置/视频号在 XML 中没有传统正文，退回聊天记录里的文字，
+            # 不能只显示一个类型标签。
+            if not desc and item.get("chat_records"):
+                desc = "\n".join(
+                    str(x.get("desc") or "").strip()
+                    for x in item["chat_records"]
+                    if str(x.get("desc") or "").strip()
+                )
             # 只有当 description 有值，或者 content_raw 不是 XML 格式时才使用
             content = desc if desc else (raw_content if raw_content and not raw_content.strip().startswith("<") else "")
 
             # Extract images (CDN URLs + keys)
             images = _extract_fav_image_info(item)
+            videos = item.get("video_list") or []
 
             # Extract chat records for nested chat records (type 14)
             # _parse_fav_xml merges results into item, so chat_records is at top level
@@ -524,6 +540,7 @@ def handle_fav_list(params, config: AssistantConfig):
                 "from_user": item.get("from_user", ""),
                 "link": item.get("link", ""),
                 "images": images,
+                "videos": videos,
                 "chat_records": chat_records,
                 # Also include raw content for special types
                 "content_raw": raw_content,

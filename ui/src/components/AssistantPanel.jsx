@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -9,7 +9,7 @@ import { WEEKDAY_LABELS, parseCronExpr, cronToLabel } from '../utils/cron'
 import { getNotificationPreview, toPlainPreview } from '../utils/digestPreview.mjs'
 
 const pageTransition = {
-  initial: { opacity: 0, x: 12 },
+  initial: { opacity: 1, x: 12 },
   animate: { opacity: 1, x: 0 },
   exit: { opacity: 0, x: -12 },
 }
@@ -660,7 +660,7 @@ export default function AssistantPanel() {
       <AnimatePresence>
         {saveFlash && (
           <motion.div
-            initial={{ opacity: 0, y: 10 }}
+            initial={{ opacity: 1, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 10 }}
             transition={{ duration: 0.2 }}
@@ -729,7 +729,7 @@ export default function AssistantPanel() {
               {(config.alert_groups || []).map((ag, i) => (
                 <motion.div
                   key={i}
-                  initial={{ opacity: 0, height: 0 }}
+                  initial={{ opacity: 1, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
                   transition={{ duration: 0.2 }}
@@ -905,7 +905,7 @@ export default function AssistantPanel() {
                 return (
                 <motion.div
                   key={cardKey}
-                  initial={{ opacity: 0, height: 0 }}
+                  initial={{ opacity: 1, height: 0 }}
                   animate={{ opacity: 1, height: 'auto' }}
                   exit={{ opacity: 0, height: 0 }}
                   transition={{ duration: 0.2 }}

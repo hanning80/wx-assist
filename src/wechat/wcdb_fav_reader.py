@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 from datetime import datetime
 from xml.etree import ElementTree as ET
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +22,12 @@ FAV_TYPES = {
     3: "语音",
     4: "视频",
     5: "网页链接",
-    6: "音乐",
+    6: "位置",
     8: "文件",
-    14: "笔记",
-    18: "位置",
+    14: "聊天记录",
+    16: "位置",
+    18: "收藏笔记",
+    20: "视频号",
 }
 
 
@@ -211,6 +214,12 @@ class WcdbFavReader:
                 data_items.append({k: v for k, v in item_info.items() if v})
             if data_items:
                 result["chat_records"] = data_items
+                if root.get("type") == "18" and not result.get("title"):
+                    first_text = next(
+                        (str(x.get("desc") or "").strip() for x in data_items
+                         if str(x.get("desc") or "").strip()), "")
+                    if first_text:
+                        result["title"] = first_text[:80]
 
         # 图片的 CDN 信息（收集所有图片，包括顶层和聊天记录中的）
         image_list = []
@@ -235,6 +244,84 @@ class WcdbFavReader:
             type2_imgs = [i for i, di in zip(image_list, datalist.findall("dataitem")) if di.get("datatype") == "2"]
             result["image_cdn"] = (type2_imgs[0] if type2_imgs else image_list[0])
             result["image_list"] = image_list
+
+        # 位置收藏：<locitem> 里才是真正的地点名、地址和坐标
+        loc = root.find(".//locitem")
+        if loc is not None:
+            poiname = self._get_text(loc, "poiname")
+            label = self._get_text(loc, "label")
+            lng = self._get_text(loc, "lng")
+            lat = self._get_text(loc, "lat")
+            poiid = self._get_text(loc, "poiid")
+            # 微信有些位置收藏只写了占位词 [位置]，没有真实地址；
+            # 这种情况用坐标兜底，别让界面只显示一个空标签。
+            label_text = label if label and label not in ("[位置]", "位置") else ""
+            if not label_text and lng and lat:
+                label_text = "坐标 %s, %s" % (lat, lng)
+            location = {
+                "name": poiname or "",
+                "address": label_text,
+                "lng": lng or "",
+                "lat": lat or "",
+                "poiid": poiid or "",
+            }
+            result["location"] = location
+            if poiname:
+                result["title"] = result.get("title") or poiname
+            if label_text:
+                result["description"] = result.get("description") or label_text
+            if lng and lat:
+                result["link"] = (
+                    "https://uri.amap.com/marker?position=%s,%s&name=%s&src=wx-assist"
+                    % (quote(lng, safe=""), quote(lat, safe=""),
+                       quote(poiname or label or "收藏位置", safe=""))
+                )
+
+        # 视频号收藏：<finderFeed> 里有昵称、正文、视频地址和封面
+        finder = root.find(".//finderFeed")
+        if finder is not None:
+            nickname = self._get_text(finder, "nickname")
+            desc = self._get_text(finder, "desc")
+            object_id = self._get_text(finder, "objectId")
+            object_nonce_id = self._get_text(finder, "objectNonceId")
+            feed_type = self._get_text(finder, "feedType")
+            duration = self._get_text(finder, "videoPlayDuration")
+            if desc:
+                result["title"] = result.get("title") or desc
+                result["description"] = result.get("description") or desc
+            elif nickname:
+                result["title"] = result.get("title") or nickname
+            videos = []
+            media_list = finder.find("mediaList")
+            if media_list is not None:
+                for media in media_list.findall("media"):
+                    video_url = self._get_text(media, "url")
+                    thumb_url = self._get_text(media, "thumbUrl")
+                    cover_url = self._get_text(media, "coverUrl")
+                    if not (video_url or thumb_url or cover_url):
+                        continue
+                    videos.append({
+                        "url": video_url or "",
+                        "thumb_url": thumb_url or cover_url or "",
+                        "cover_url": cover_url or thumb_url or "",
+                        "duration": int(duration) if duration and duration.isdigit() else 0,
+                        "media_type": self._get_text(media, "mediaType") or "",
+                        "width": self._get_text(media, "width") or "",
+                        "height": self._get_text(media, "height") or "",
+                        "nickname": nickname or "",
+                        "desc": desc or "",
+                        "object_id": object_id or "",
+                        "object_nonce_id": object_nonce_id or "",
+                        "feed_type": feed_type or "",
+                    })
+            if videos:
+                result["video_list"] = videos
+                result["finder"] = {
+                    "nickname": nickname or "",
+                    "desc": desc or "",
+                    "object_id": object_id or "",
+                    "object_nonce_id": object_nonce_id or "",
+                }
 
         return result
 

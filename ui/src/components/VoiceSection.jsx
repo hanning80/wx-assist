@@ -356,6 +356,10 @@ export default function VoiceSection() {
                     ]} />
                 </Field>
 
+                <div className="rounded-xl bg-amber-500/10 px-3.5 py-2.5 text-[12px] leading-5 text-amber-600 dark:text-amber-400">
+                  实时全双工只在网页面板的通话按钮里用；微信里只能发语音条，不能像打电话那样实时对话。
+                </div>
+
                 {/* B 档语速不可调：端到端模型自行决定，避免用户误以为能像 A 档那样设置 */}
                 <div className="rounded-xl bg-bg-raised px-3.5 py-2.5 text-[12px] leading-5 text-text-muted">
                   语速由实时模型（端到端）自行决定，不可调整；如需变速请在 A 档选择 Edge 合成。
@@ -472,7 +476,7 @@ export default function VoiceSection() {
                 )}
                 {!testing && testResult && (
                   <motion.div
-                    initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }}
+                    initial={{ opacity: 1, y: -4 }} animate={{ opacity: 1, y: 0 }}
                     className={`flex items-start gap-2 rounded-xl px-3.5 py-2.5 text-[12.5px] ${
                       testResult.ok
                         ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'

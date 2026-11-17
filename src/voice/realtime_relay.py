@@ -35,8 +35,8 @@ logger = logging.getLogger(__name__)
 
 REALTIME_WSS = "wss://maas.qianwenaiapi.com/api-ws/v1/realtime"
 
-# 语音全双工只开放只读/无副作用工具。写操作（add_alert/create_cron 等）
-# 一律不注册，避免语音误触发；需要配置时引导用户去文字 Agent / 网页。
+# 语音全双工只开放查询和无副作用工具；生活提醒的新建/删除必须先确认，
+# 通过 create/delete + confirm 三个工具两步走，不直接落地。
 VOICE_TOOL_WHITELIST = {
     "query_my_feed",
     "get_status",
@@ -53,20 +53,78 @@ VOICE_TOOL_WHITELIST = {
     "search_moments",
     "search_favorites",
     "search_oa_accounts",
+    "recall_my_memory",
+    "find_saved_location",
+    "list_journal_reminders",
+    "update_journal_reminder",
+    "create_journal_reminder",
+    "delete_journal_reminder",
+    "confirm_journal_reminder",
 }
 
 VOICE_INSTRUCTIONS = (
     "你是摘星语音助手，运行在用户的个人微信机器人上，通过打电话的方式与用户交流。"
     "你可以调用工具查询用户的历史推送（公众号提醒、群聊摘要、定时榜单等）、"
-    "聊天记录、公众号文章、朋友圈和收藏。\n"
+    "聊天记录、公众号文章、朋友圈、收藏，以及用户自己记进日记/收藏的内容。\n"
     "规则：\n"
-    "1. 需要事实信息时必须先调用工具，禁止编造；工具没有结果就如实说没找到。\n"
-    "2. 回答口语化、简洁，先给结论；不要使用 Markdown、表格、星号和长列表。\n"
-    "3. 日期用相对说法（今天、昨天），不要念完整的年月日数字。\n"
-    "4. 单次回答控制在 300 字内，信息量大时说重点，等用户追问再展开。\n"
-    "5. 你不能修改任何配置（不能加预警、建定时任务）；用户要求这类操作时，"
-    "礼貌说明语音模式只支持查询，建议在微信对话或网页里操作。"
+    "1. 需要事实信息时必须先调用工具，禁止编造；工具没有结果就如实说没找到。"
+    "回答涉及用户以前记过、收藏过、聊过的内容时，检索顺序固定为日记、收藏、聊天记录；"
+    "多个渠道都有结果时也按这个顺序说，不要把聊天记录放到前面。\n"
+    "2. 用户问“我以前记过/发过什么”“辣椒红品相”“日记里怎么说的”，"
+    "必须先调用 recall_my_memory 查日记库；不要只查聊天记录，聊天记录不等于日记。"
+    "如果 recall_my_memory 有结果，优先按它里面的原文回答，不能因为聊天记录里没有就说没找到。\n"
+    "3. 回答口语化、简洁，先给结论；不要使用 Markdown、表格、星号和长列表。\n"
+    "4. 日期用相对说法（今天、昨天），不要念完整的年月日数字。\n"
+    "5. 单次回答控制在 300 字内，信息量大时说重点，等用户追问再展开。\n"
+    "6. 用户问“现在有什么提醒/现在有什么定时任务”时，默认指生活提醒，"
+    "用 list_journal_reminders 查；只有用户明确说“采集与维护/群摘要/榜单/自动推送”才用 list_crons。"
+    "用户接着说“把某某改成每天两次、一共七天/改成八点和十七点”，先复述要改的内容，"
+    "等用户确认后再调 update_journal_reminder。\n"
+    "7. 用户要新建生活提醒时，先把用户原话交给 create_journal_reminder；"
+    "这个工具只返回确认问句，不会立刻建。必须把确认问句复述给用户，等用户明确说“确认/建吧”"
+    "才调 confirm_journal_reminder(accepted=true)；用户说“取消/不建了”就 accepted=false。"
+    "用户要删生活提醒时，先 list_journal_reminders 找到目标，再调 delete_journal_reminder；"
+    "同样等用户确认后才调 confirm_journal_reminder。不要直接说自己不能新建、删除或定时提醒。\n"
+    "8. 用户问“把某某的位置发给我”“某某在哪”“导航到某某的位置”时，"
+    "先调 find_saved_location；它固定按日记、收藏、聊天记录的顺序查，回答也按这个顺序。"
+    "有结果就直接念地点、时间、原文或高德链接，并说明这是日记、收藏或聊天里存的，不是实时定位；"
+    "不要因为聊天记录里没显示就说没有。\n"
 )
+
+
+def _voice_instructions() -> str:
+    """语音指令 + 后台长期回答规则；规则关闭时只返回原指令。"""
+    try:
+        from src.journal.answer_rule import prompt_block
+        return VOICE_INSTRUCTIONS + prompt_block()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[VOICE-RT] 加载回答规则失败: %s", e)
+        return VOICE_INSTRUCTIONS
+
+
+def augment_personal_memory(registry, tool_name: str, query: str, result: str) -> str:
+    """语音模型常常只调 search_chat_history，漏掉日记库。
+
+    对“我以前记过/品相/位置/原话”这类问题，在聊天检索结果后面补一段
+    确定性的日记/收藏召回，避免模型因为聊天记录里没有就直接答“找不到”。
+    """
+    if tool_name != "search_chat_history" or not query:
+        return result
+    try:
+        from src.journal.recall import JOURNAL_QUERY_RE
+    except Exception:  # noqa: BLE001
+        return result
+    if not JOURNAL_QUERY_RE.search(query):
+        return result
+    try:
+        memory = registry.execute("recall_my_memory", {"query": query})
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[VOICE-RT] 自动补查日记库失败: %s", e)
+        return result
+    if not memory or "没有记过或收藏过" in memory:
+        return result
+    return result + "\n\n【系统自动补查的日记/收藏记忆，优先使用】\n" + memory
+
 
 # 下行事件中不需要原样转发给浏览器的（中继自行处理音频/工具）
 _AUDIO_DELTA = "response.audio.delta"
@@ -271,18 +329,19 @@ class RealtimeRelay:
         # - qwen*-omni-*-realtime：音色走 audio.output.voice（Tina 等 Omni 音色），
         #   不接受顶层 voice/format，音频默认即 PCM
         is_omni = "omni" in model
+        instructions = _voice_instructions()
         if is_omni:
             session = {
                 "modalities": ["text", "audio"],
                 "audio": {"output": {"voice": voice or "Tina"}},
-                "instructions": VOICE_INSTRUCTIONS,
+                "instructions": instructions,
                 "turn_detection": turn_detection,
             }
         else:
             session = {
                 "modalities": ["text", "audio"],
                 "voice": voice or "longanqian_v3.1",
-                "instructions": VOICE_INSTRUCTIONS,
+                "instructions": instructions,
                 "input_audio_format": "pcm",
                 "output_audio_format": "pcm",
                 "turn_detection": turn_detection,
@@ -424,7 +483,9 @@ class RealtimeRelay:
         except (ValueError, TypeError):
             args = {}
         try:
-            return self._registry.execute(name, args)
+            result = self._registry.execute(name, args)
+            query = str(args.get("query") or "")
+            return augment_personal_memory(self._registry, name, query, result)
         except Exception as e:
             logger.warning("[VOICE-RT] sid=%s tool %s failed: %s", self.sid, name, e)
             return f"工具执行出错: {e}"

@@ -682,11 +682,26 @@ class WcdbBackend(AbstractWeChatBackend):
         )
         msg_id = hashlib.md5(str(raw_id).encode()).hexdigest()
 
+        # 图片/视频先把原始 XML 旁路留一份；messages.content 仍走清洗后的文字。
+        # 没有这一层，历史图片的 md5 会被压成 [图片]，以后再也回不到原件。
+        local_type = msg.get("localType", msg.get("msg_type", 1))
+        try:
+            lt = int(local_type)
+        except (TypeError, ValueError):
+            lt = 1
+        if lt in (3, 43) and self._store is not None and hasattr(self._store, "save_media_raw"):
+            try:
+                self._store.save_media_raw(
+                    msg_id, talker, msg.get("local_id"), msg.get("server_id"),
+                    lt, ts, resolved_content,
+                )
+            except Exception:
+                logger.debug("媒体原始 XML 旁路保存失败: %s", msg_id, exc_info=True)
+
         # 入库前把 XML 负载（引用回复/聊天记录/链接/图片/名片/位置/邮件/通话…）
         # 压成可读文本：messages.db 存的就是"清洗后的数据"，下游（关键词告警 /
         # 摘要 / RAG / 记忆）不必各自再解析 XML。规则见 wechat/msg_text.py；
         # 非 XML 内容原样保留，解压失败/未知 XML 也不会把原始 XML 写回库里。
-        local_type = msg.get("localType", msg.get("msg_type", 1))
         from .msg_text import clean_message_content
         resolved_content = clean_message_content(resolved_content, local_type)
 
@@ -700,6 +715,10 @@ class WcdbBackend(AbstractWeChatBackend):
             "msg_type": int(local_type),
             "timestamp": ts,
             "is_group": True,
+            # 语音转写要回微信本地库取音频，必须保留原始编号；
+            # 以前这里只留 message_id，转写队列无法回溯。
+            "local_id": msg.get("local_id"),
+            "server_id": msg.get("server_id"),
         }
 
     def _seed_known_ids(self) -> None:

@@ -300,7 +300,7 @@ function TaskForm({ skills, initial, onSave, onCancel, onRefresh }) {
   return (
     <motion.div
       ref={formRef}
-      initial={{ opacity: 0, y: -8 }}
+      initial={{ opacity: 1, y: -8 }}
       animate={{ opacity: 1, y: 0 }}
       className="border border-brand-green/30 rounded-xl bg-bg-card overflow-hidden mb-6"
     >
@@ -340,7 +340,7 @@ function TaskForm({ skills, initial, onSave, onCancel, onRefresh }) {
           </div>
           <div className="flex-1 min-w-0">
             <label className="block text-xs text-text-muted mb-1 text-xs.5">
-              执行 Skill <span className="text-[#d45656]">*</span>
+              执行技能 <span className="text-[#d45656]">*</span>
             </label>
             <div className="flex items-center gap-2">
               <select
@@ -350,7 +350,7 @@ function TaskForm({ skills, initial, onSave, onCancel, onRefresh }) {
                 className="flex-1 bg-bg-raised border border-border-main rounded-full px-4 py-2.5 text-sm text-text-main
                   focus:outline-none focus:border-brand-green cursor-pointer disabled:opacity-50"
               >
-                {!skills.length && <option>(暂无 skill)</option>}
+                {!skills.length && <option>(暂无技能)</option>}
                 {skills.map(s => (
                   <option key={s.name} value={s.name}>
                     {s.name} · {s.description?.slice(0, 50)}
@@ -360,7 +360,7 @@ function TaskForm({ skills, initial, onSave, onCancel, onRefresh }) {
               <button
                 type="button"
                 onClick={onRefresh}
-                title="刷新 skill 列表"
+                title="刷新技能列表"
                 className="flex-shrink-0 w-9 h-9 flex items-center justify-center rounded-full
                   bg-bg-raised border border-border-main text-text-muted
                   hover:text-brand-green hover:border-brand-green/30
@@ -676,7 +676,7 @@ function ExecutionHistory() {
       <AnimatePresence>
         {detail && (
           <motion.div
-            initial={{ opacity: 0 }}
+            initial={{ opacity: 1 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             className="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -755,7 +755,7 @@ function ExecutionHistory() {
 function ConfirmDialog({ title, message, confirmLabel = '确认', danger = true, onConfirm, onCancel }) {
   return (
     <motion.div
-      initial={{ opacity: 0 }}
+      initial={{ opacity: 1 }}
       animate={{ opacity: 1 }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4"
     >
@@ -935,12 +935,12 @@ export default function SchedulerPanel({ section = 'tasks', onSectionChange = ()
       <div className="mb-5">
         <div className="flex items-center gap-2.5 mb-1">
           <div className="w-1.5 h-4.5 rounded-full shadow-sm bg-brand-green" />
-          <h3 className="text-sm font-semibold tracking-tight text-text-main">定时任务</h3>
+          <h3 className="text-sm font-semibold tracking-tight text-text-main">采集与维护</h3>
           <Clock size={16} className="text-text-muted" />
-          <span className="text-xs text-text-muted">· 共 {tasks.length} 个任务 · {enabledCount} 个启用</span>
+          <span className="text-xs text-text-muted">· 共 {tasks.length} 个采集/维护任务 · {enabledCount} 个启用</span>
         </div>
         <p className="text-xs text-text-muted leading-relaxed pl-4">
-          通用定时调度 · 通过 skill 执行
+          这里只管群摘要、榜单、自动推送、云端同步等采集与维护任务。生活提醒（喂鸟、喂食、日常事项）在“日记与复盘”页，不叫定时任务。
         </p>
       </div>
 

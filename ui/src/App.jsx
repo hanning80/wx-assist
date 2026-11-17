@@ -1,6 +1,6 @@
-﻿﻿﻿﻿﻿﻿﻿﻿﻿﻿import { useState, useEffect } from 'react'
+﻿﻿﻿﻿﻿﻿﻿﻿﻿import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Gear, ChartLine, Scroll, Spinner, Sun, Moon, ChatCircleDots, Star, Eye, Newspaper, Chats, PaperPlaneTilt, Bell, QrCode, X, PuzzlePiece, Clock, Microphone } from '@phosphor-icons/react'
+import { Gear, ChartLine, Scroll, Spinner, Sun, Moon, ChatCircleDots, Star, Eye, Newspaper, Chats, PaperPlaneTilt, Bell, QrCode, X, PuzzlePiece, Clock, Microphone, Notebook } from '@phosphor-icons/react'
 import { API_BASE, getWsUrl } from './components/SharedComponents'
 import Dashboard from './components/Dashboard'
 import ConfigPanel from './components/ConfigPanel'
@@ -13,6 +13,7 @@ import OATab from './components/OATab'
 import MCPTab from './components/MCPTab'
 import SchedulerPanel from './components/SchedulerPanel'
 import ChatTab from './components/ChatTab'
+import JournalTab from './components/JournalTab'
 import FeatureGuide from './components/FeatureGuide'
 import TaskCenter from './components/TaskCenter'
 import VoiceCall from './components/VoiceCall'
@@ -33,19 +34,21 @@ const TABS = [
       { id: 'data', label: '数据配置' },
       { id: 'push', label: '消息推送' },
       { id: 'voice', label: '语音通话' },
+      { id: 'journal', label: '日记与复盘' },
       { id: 'general', label: '通用' },
     ],
   },
   { id: 'assistant', label: '群聊助手', icon: ChatCircleDots },
+  { id: 'journal', label: '日记与复盘', icon: Notebook },
   { id: 'chats', label: '会话管理', icon: Chats },
   { id: 'favorites', label: '收藏助手', icon: Star },
   { id: 'moments', label: '朋友圈助手', icon: Eye },
   { id: 'oa', label: '公众号助手', icon: Newspaper },
   {
-    id: 'scheduler', label: '定时任务', icon: Clock,
+    id: 'scheduler', label: '采集与维护', icon: Clock,
     subs: [
-      { id: 'tasks', label: '定时任务' },
-      { id: 'skills', label: 'Skill 库' },
+      { id: 'tasks', label: '采集与维护' },
+      { id: 'skills', label: '技能库' },
       { id: 'history', label: '执行历史' },
     ],
   },
@@ -141,8 +144,12 @@ export default function App() {
     }
   }, [showTaskCenter])
 
-  // Theme state: default to 'dark' (Version 1: 夜航控制台) but can toggle to 'light' (正常模式)
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark')
+  // Theme state: follow the saved choice, otherwise use the system light/dark preference.
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem('theme')
+    if (saved === 'light' || saved === 'dark') return saved
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+  })
 
   // Apply theme class to HTML root
   useEffect(() => {
@@ -153,6 +160,21 @@ export default function App() {
     }
     localStorage.setItem('theme', theme)
   }, [theme])
+
+  // 没有手动选过主题时，跟随 Windows 的白天/黑夜切换。
+  useEffect(() => {
+    if (!window.matchMedia) return
+    const media = window.matchMedia('(prefers-color-scheme: dark)')
+    const onChange = (e) => {
+      if (!localStorage.getItem('theme')) setTheme(e.matches ? 'dark' : 'light')
+    }
+    if (media.addEventListener) media.addEventListener('change', onChange)
+    else media.addListener(onChange)
+    return () => {
+      if (media.removeEventListener) media.removeEventListener('change', onChange)
+      else media.removeListener(onChange)
+    }
+  }, [])
 
   // Check onboarding status on mount
   useEffect(() => {
@@ -532,7 +554,9 @@ export default function App() {
                       <div className="flex gap-0.5 mt-0.5 ml-0.5">
                         {subs.filter(sub => {
                           if (id === 'scheduler') return true
-                          return sub.id === 'ai' || sub.id === 'push' || sub.id === 'voice'
+                          // 窄屏也要能进全部配置分区，否则“日记与复盘 · 云端存储”
+                          // 在手机上会被过滤掉，用户没法填写 OSS。
+                          return true
                         }).map(sub => {
                           const curSection =
                             id === 'scheduler' ? schedulerSection : configSection
@@ -562,13 +586,13 @@ export default function App() {
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeTab}
-                initial={{ opacity: 0, y: 8 }}
+                initial={{ opacity: 1, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -8 }}
                 transition={{ duration: 0.2 }}
                 className="p-4 lg:p-8"
               >
-                {activeTab === 'dashboard' && <Dashboard status={status} onTabChange={setActiveTab} />}
+                {activeTab === 'dashboard' && <Dashboard status={status} onTabChange={setActiveTab} connected={wsConnected} />}
                 {activeTab === 'config' && (
                   <ConfigPanel
                     activeSection={configSection}
@@ -578,6 +602,7 @@ export default function App() {
                   />
                 )}
                 {activeTab === 'assistant' && <AssistantPanel />}
+          {activeTab === 'journal' && <JournalTab theme={theme} />}
                 {activeTab === 'chats' && <ChatTab />}
                 {activeTab === 'favorites' && <FavoritesTab />}
                 {activeTab === 'moments' && <MomentsTab />}
@@ -622,7 +647,7 @@ export default function App() {
       <AnimatePresence>
         {showLAN && (
           <motion.div
-            initial={{ opacity: 0 }}
+            initial={{ opacity: 1 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.15 }}
@@ -630,7 +655,7 @@ export default function App() {
           >
             <div className="absolute inset-0 bg-black/40" onClick={() => setShowLAN(false)} />
             <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
+              initial={{ opacity: 1, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               exit={{ opacity: 0, scale: 0.95 }}
               transition={{ duration: 0.15 }}

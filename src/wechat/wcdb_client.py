@@ -33,6 +33,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import shutil
 import threading
 from pathlib import Path
 
@@ -239,16 +241,46 @@ class WcdbNativeClient:
                 account_dir, self._key,
                 cache_dir=self._cache_dir or self._default_cache_dir(),
             )
-            self._reader.set_my_wxid(self._wxid)
+            # 自己的 wxid：优先环境变量；目录名可能带 "wxid_xxx_abcd" 这类后缀，去掉才认得出自己的消息
+            my = (os.environ.get("WXID", "").strip() or self._wxid or "").strip()
+            my = re.sub(r"_[0-9a-f]{4}$", "", my)
+            self._reader.set_my_wxid(my)
+            if my:
+                self._wxid = my
+                self._config["myWxid"] = my
             logger.info("本地读取器已就绪: %s", self._account_dir)
 
     def _default_cache_dir(self) -> Path:
-        """明文解密缓存目录（放在项目 data/ 下，便于清理且不污染微信目录）。"""
+        """明文解密缓存目录（放在项目 data/ 下，便于清理且不污染微信目录）。
+
+        每个进程用独立子目录：面板进程和日记线程会同时读微信库，共用一份
+        明文快照时，一方开着旧库、另一方就没法原子替换（WinError 5），
+        只能降级用旧数据。分开后互不打扰；已退出进程的目录顺手清掉。
+        """
         try:
             from src.config import PROJECT_ROOT
-            return Path(PROJECT_ROOT) / "data" / "decrypted_cache"
+            base = Path(PROJECT_ROOT) / "data" / "decrypted_cache"
         except Exception:                          # noqa: BLE001
-            return Path.cwd() / "data" / "decrypted_cache"
+            base = Path.cwd() / "data" / "decrypted_cache"
+        proc_dir = base / f"p{os.getpid()}"
+        try:
+            import ctypes
+            k32 = ctypes.windll.kernel32
+            for old in base.glob("p*"):
+                if old == proc_dir or not old.is_dir():
+                    continue
+                try:
+                    pid = int(old.name[1:])
+                except ValueError:
+                    continue
+                handle = k32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+                if handle:
+                    k32.CloseHandle(handle)
+                    continue
+                shutil.rmtree(old, ignore_errors=True)
+        except Exception:  # noqa: BLE001
+            pass
+        return proc_dir
 
     def open(self):
         """打开账号库并校验密钥（失败抛 RuntimeError，与原实现一致）。"""
@@ -420,16 +452,28 @@ class WcdbNativeClient:
 
     # ── 图片路径（替代 wcdb_resolve_image_hardlink）──────────────────
 
-    def resolve_image_hardlink(self, md5: str) -> str:
-        """由图片 md5 定位 ``.dat`` 文件路径。"""
+    def resolve_image_hardlink(self, md5: str, account_dir: str = "") -> str:
+        """由图片 md5 定位 ``.dat`` 文件路径；副账号的收藏要指定账号目录。"""
         if not md5:
             return ""
         try:
             return self._require_reader().resolve_image_hardlink(
-                md5, account_dir=self._account_dir
+                md5, account_dir=account_dir or self._account_dir
             )
         except Exception as exc:                   # noqa: BLE001
             logger.debug("resolve_image_hardlink 失败: %s", exc)
+            return ""
+
+    def resolve_video_hardlink(self, md5: str, raw: bool = False) -> str:
+        """由视频 md5 / rawmd5 定位本地 ``.mp4`` 路径。"""
+        if not md5:
+            return ""
+        try:
+            return self._require_reader().resolve_video_hardlink(
+                md5, account_dir=self._account_dir, raw=raw
+            )
+        except Exception as exc:                   # noqa: BLE001
+            logger.debug("resolve_video_hardlink 失败: %s", exc)
             return ""
 
     # ── 朋友圈 ──────────────────────────────────────────────────────

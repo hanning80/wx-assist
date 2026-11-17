@@ -225,22 +225,36 @@ def test_cache_failure_keeps_cursor_and_retries_successfully(tmp_path, monkeypat
     monkeypatch.chdir(tmp_path)
     cache = ContentCache(str(tmp_path / "messages.db"))
     cache.query = Mock(return_value=[{
-        "post_id": "1", "clean_content": "hello", "nickname": "name",
-        "create_time": 1, "cached_at": 100,
+        "fav_id": "1", "clean_text": "hello", "type_name": "笔记",
+        "update_time": 1, "cached_at": 100, "title": "", "description": "", "link": "",
     }])
     rag = SimpleNamespace(_embedder=Mock(), _store=Mock())
     rag._store.add.side_effect = RuntimeError("write failed")
-    cache.index_to_rag(rag, "sns")
-    assert cache._last_indexed_at["sns"] == 0
+    cache.index_to_rag(rag, "fav")
+    assert cache._last_indexed_at["fav"] == 0
     snap = rag_status.snapshot()
-    assert snap["jobs"]["sns"]["state"] == "error"
+    assert snap["jobs"]["fav"]["state"] == "error"
 
     rag._store.add.side_effect = None
-    cache.index_to_rag(rag, "sns")
-    assert cache._last_indexed_at["sns"] == 100
+    cache.index_to_rag(rag, "fav")
+    assert cache._last_indexed_at["fav"] == 100
     snap = rag_status.snapshot()
-    assert snap["jobs"]["sns"]["completed"] == 1
-    assert snap["jobs"]["sns"]["state"] == "done"
+    assert snap["jobs"]["fav"]["completed"] == 1
+    assert snap["jobs"]["fav"]["state"] == "done"
+
+
+def test_sns_is_not_indexed_into_rag(tmp_path, monkeypatch):
+    """朋友圈/视频号按业务口径不再进知识库：只清历史块，不写新块。"""
+    from src.assistant import rag_status
+
+    rag_status.reset(phase="indexing")
+    monkeypatch.chdir(tmp_path)
+    cache = ContentCache(str(tmp_path / "messages.db"))
+    cache.query = Mock(return_value=[{"post_id": "1"}])
+    rag = SimpleNamespace(_embedder=Mock(), _store=Mock())
+    cache.index_to_rag(rag, "sns")
+    assert rag._store.add.call_count == 0
+    assert rag._embedder.encode.call_count == 0
 
 
 def test_chunk_identity_is_stable_across_retries_and_separates_chats():

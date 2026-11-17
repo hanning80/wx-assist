@@ -21,7 +21,7 @@ const STATUS_LABELS = {
 function SafetyBanner({ onDismiss }) {
   return (
     <motion.div
-      initial={{ opacity: 0, y: -8 }}
+      initial={{ opacity: 1, y: -8 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -12 }}
       className="flex items-start gap-3 px-5 py-4 rounded-2xl bg-status-warn/[0.06] dark:bg-status-warn/[0.07] border border-status-warn/[0.12]"
@@ -84,7 +84,7 @@ function ServerCard({ server, status, onRestart, onToggle, onDelete, onEdit, onT
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 12 }}
+      initial={{ opacity: 1, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -12 }}
       className="bg-bg-card border border-border-main rounded-xl transition-colors hover:border-border-strong"
@@ -435,13 +435,13 @@ function ServerModal({ mode, initial, onSave, onClose }) {
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
+      initial={{ opacity: 1 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm"
     >
       <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
+        initial={{ opacity: 1, scale: 0.95 }}
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.95 }}
         transition={{ duration: 0.2, ease: easeOut }}
@@ -750,7 +750,7 @@ export default function MCPTab() {
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
+      initial={{ opacity: 1 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.3, ease: easeOut }}
       className="p-8 space-y-6 max-w-4xl "

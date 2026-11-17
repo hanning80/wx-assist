@@ -7,6 +7,7 @@ Usage:
 
 import json
 import logging
+import re
 import sqlite3
 import threading
 import time
@@ -51,7 +52,24 @@ AGENT_SYSTEM_PROMPT = """\
 - 调用工具时必须使用正确的参数
 - 如果用户指令不清晰，直接询问澄清
 - 不要编造工具返回的结果
+- 用户问“在跑的提醒/我有什么提醒/现在有什么定时任务”时，默认指生活提醒，用 list_journal_reminders；只有明确说“采集与维护/群摘要/榜单/自动推送”才用 list_crons。回答时把前者叫“生活提醒”，不要叫“定时任务”；采集与维护类才叫“采集与维护任务”。
+- 回答涉及用户以前记过、收藏过、聊过的内容时，检索顺序固定为：日记 → 收藏 → 聊天记录；多个渠道都有结果时，播报也按这个顺序，不要把聊天记录放到前面。
+- 用户要改在跑的提醒（每天几次、一共几天、几点）时，先 list_journal_reminders 确认是哪条，再 update_journal_reminder；不要新建另一套定时任务，也不要说“系统不能定时提醒”。
+- 用户要新建生活提醒时，先把原话交给 create_journal_reminder，它会返回确认问句；必须等用户明确回“确认/建吧”再调 confirm_journal_reminder(accepted=true)。用户说取消就传 false。
+- 用户要删除生活提醒时，先 list_journal_reminders 找到编号或名字，再调 delete_journal_reminder；等用户确认后再调 confirm_journal_reminder。不要跳过确认直接删。
+- 用户问“把某某的位置发给我/某某在哪/导航到某某的位置/某人标签里的地址”时，先调 find_saved_location；它固定按日记、收藏标签、聊天记录的顺序查，并把结果按同样顺序给用户。查到就把地点、时间、原文或高德链接直接给用户，并注明这是日记、收藏或聊天里存的，不是实时定位；不要因为聊天缓存没显示就说没有。
 - 任务完成后，用自然语言回复用户
+
+## 回复风格
+- 只陈述本轮已经发生的事实：解开了、入库了、上云了、没解开、只记了来源。
+- 不要写“以后同类……不会再……”“保证以后……”“永远不会……”这类承诺；以后的事以后再说。
+- 一句话能说清就一句话，不要自我表扬或加多余保证。
+
+## 视频号 / 公众号分享
+- 用户要“看懂、记录、收藏”分享内容时，读分享里可见的标题、作者、文案，帮他记下来；不要一听“解析”就拒绝。
+- 用户要“下载地址、去水印、批量抓取”时，说明版权和平台限制，不给绕过方法。
+- 分不清时先问一句：“你是要读内容，还是要下载文件？”
+- 本系统已有日记入口，用户说“记进日记/收藏”就是入库，不要再反问存在哪里。
 
 ## 停止条件（必须遵守）
 
@@ -128,6 +146,17 @@ class AgentEngine:
     def _run_conversation(self, user_message: str, *, source_platform: str,
                           source_target: str | None, conversation_key: str) -> str:
         key = conversation_key or "default"
+
+        # “以后回答引用原话”是长期规则，不是普通聊天；先落库再回执。
+        # 不放进日记，也不让模型用一句“好的”糊弄过去。
+        try:
+            from src.journal.answer_rule import maybe_handle
+            rule_reply = maybe_handle(user_message)
+            if rule_reply:
+                return rule_reply
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[Agent] 回答规则识别失败: %s", e)
+
         with self._state_lock:
             pending = self._pending_confirms.get(key)
 
@@ -161,6 +190,7 @@ class AgentEngine:
                     user_message[:80], len(history_snapshot))
 
         system = self._build_system_prompt(conversation_key=key)
+        system += self._journal_memory_block(user_message)
 
         logger.info("[Agent] Entering _react_loop — tools=%s",
                     [t["function"]["name"] for t in self._tools.registry.get_all_schemas()])
@@ -194,6 +224,7 @@ class AgentEngine:
         不装历史，不触发记忆合 consolidation。
         """
         system = system_override or self._build_system_prompt()
+        system += self._journal_memory_block(prompt)
         messages = [{"role": "user", "content": prompt}]
         logger.info("[Agent] run_once — prompt='%s'", prompt[:80])
         return self._react_loop(system, messages)
@@ -255,6 +286,16 @@ class AgentEngine:
             conversation_lock.release()
 
     def _stream_inner(self, user_message: str, key: str, cancel_event):
+        # 语音里说“以后回答引用原话”也要能落规则，不能只当一次闲聊。
+        try:
+            from src.journal.answer_rule import maybe_handle
+            rule_reply = maybe_handle(user_message)
+            if rule_reply:
+                yield {"type": "final", "content": rule_reply}
+                return
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[Agent] 语音回答规则识别失败: %s", e)
+
         # ── 待确认状态：语音回答"确定/取消"走非流式确认状态机 ──
         with self._state_lock:
             has_pending = key in self._pending_confirms
@@ -293,6 +334,7 @@ class AgentEngine:
 
         system = self._build_system_prompt(conversation_key=key)
         system += self._voice_system_suffix()
+        system += self._journal_memory_block(user_message)
 
         reply = None
         try:
@@ -816,7 +858,133 @@ class AgentEngine:
             memory_lines = "\n".join(f"- {m}" for m in memories)
             prompt += f"\n\n## 对话记忆\n{memory_lines}"
 
+        # 长期回答规则：后台可关；关闭时 prompt_block 返回空串。
+        try:
+            from src.journal.answer_rule import prompt_block
+            prompt += prompt_block()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[Agent] 加载回答规则失败: %s", e)
+
         return prompt
+
+    # 用户问“以前/上次/记过/品相”这类问题时，先自动查知识库，
+    # 不把“要不要调用工具”交给模型临场判断。
+    def _journal_memory_block(self, query: str) -> str:
+        """统一检索入口：日记/附件 → 收藏 → 公众号 → 聊天。朋友圈不参与。
+
+        以前只有命中 JOURNAL_QUERY_RE 才查，像“咖啡”这种没有“记过/收藏”
+        字样的普通问题会直接跳过知识库。现在改成默认就查；只有“你好/
+        谢谢”这类寒暄跳过。没有命中关键词时把每路条数收小，减少噪声。
+        """
+        if not query or not query.strip():
+            return ""
+        text = query.strip()
+        try:
+            from src.journal.recall import JOURNAL_QUERY_RE
+            matched = bool(JOURNAL_QUERY_RE.search(text))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[Agent] 加载日记召回失败: %s", e)
+            return ""
+        if not matched and re.fullmatch(r"(你好|您好|在吗|谢谢|好的|嗯|哈哈|测试)[。！？!? ]*", text):
+            return ""
+
+        main_rag = getattr(self, "_rag", None)
+        if main_rag is None:
+            main_rag = getattr(getattr(self, "_tools", None), "_rag", None)
+
+        # 位置类问题不能只靠向量块：收藏位置和聊天位置的原件不在索引里，
+        # 必须回查收藏标签和聊天库，才拿得到高德链接。
+        location_block = ""
+        if any(k in text for k in ("位置", "定位", "地址", "导航", "在哪", "哪里")):
+            try:
+                from src.journal.places import (
+                    find_locations, format_locations, guess_person_name,
+                )
+                person = guess_person_name(text)
+                loc = find_locations(person) if person else {}
+                if loc.get("diary") or loc.get("favorites") or loc.get("chats"):
+                    location_block = format_locations(loc, limit=5)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("[Agent] 位置原件查询失败: %s", e)
+
+        try:
+            from src.assistant.rag.gateway import KnowledgeGateway
+            groups = KnowledgeGateway(main_rag=main_rag).groups(
+                query, top_k=(10 if matched else 6),
+                per_source=(4 if matched else 2))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[Agent] 统一知识检索失败: %s", e)
+            return location_block
+
+        hits = groups.get("journal") or []
+        fav_hits = groups.get("fav") or []
+        other_hits = groups.get("other") or []
+        if not hits and not fav_hits and not other_hits and not location_block:
+            return ""
+
+        lines = []
+        if location_block:
+            lines.extend([
+                "## 日记/收藏/聊天里的原始位置记录（系统回查，不是实时定位）",
+                location_block,
+            ])
+        if hits:
+            top = float(hits[0].get("score") or 0)
+            floor = max(0.30, top - 0.15)
+            picked = [h for h in hits if float(h.get("score") or 0) >= floor][:3]
+            if not picked:
+                # 分数整体偏低时至少给前三条，不能因为阈值把真实条目全丢掉。
+                picked = hits[:3]
+            if picked:
+                lines.extend([
+                    "## 用户日记库检索结果（系统自动查到的真实原文，不是猜测）",
+                    "用户这句话涉及以前记过/发过的内容。回答时优先依据下面这些原文；"
+                    "如果原文确实不够，再说明信息不足。不要回答“看不到之前的消息记录”。",
+                ])
+                for i, h in enumerate(picked, 1):
+                    text = (h.get("text") or "").strip()
+                    lines.append("%d. %s｜%s｜相关度 %.3f\n%s" % (
+                        i, h.get("date") or "", h.get("title") or "",
+                        float(h.get("score") or 0), text[:1200]))
+        if fav_hits:
+            try:
+                from src.journal.favorites import favorite_details
+            except Exception:  # noqa: BLE001
+                favorite_details = lambda _x: None
+            lines.extend([
+                "## 微信收藏检索结果（系统自动查到的真实收藏，不是猜测）",
+                "涉及收藏里的位置、文件、笔记或聊天记录时，优先依据下面内容；"
+                "需要发位置时，直接把对应的高德链接发给用户。"
+                "如果标题/内容与用户说的人或地点对不上，要明确说没找到，"
+                "不能用地名相似的位置冒充。",
+            ])
+            for i, r in enumerate(fav_hits, 1):
+                detail = favorite_details(str(r.get("source_id") or "")) or {}
+                title = detail.get("title") or r.get("title") or ""
+                link = detail.get("link") or r.get("link") or ""
+                lines.append("%d. %s｜%s｜%s\n%s%s" % (
+                    i, (r.get("date") or "")[:10],
+                    detail.get("type_name") or r.get("kind") or "收藏",
+                    title, (r.get("text") or "")[:800],
+                    ("\n高德地图：" + link) if link and detail.get("type") == 6
+                    else (("\n原链接：" + link) if link else ""),
+                ))
+        if other_hits:
+            lines.extend([
+                "## 其他知识库检索结果（公众号/聊天，系统自动查到的真实原文）",
+                "按日记、收藏、其他顺序参考；下面是补充材料，不能覆盖上面的原文。",
+            ])
+            for i, r in enumerate(other_hits, 1):
+                label = r.get("source_label") or ""
+                title = r.get("title") or ""
+                text = (r.get("text") or "").strip()[:1200]
+                link = r.get("link") or ""
+                lines.append("%d. %s｜%s｜%s\n%s%s" % (
+                    i, r.get("date") or "", label, title, text,
+                    (("\n原链接：" + link) if link else ""),
+                ))
+        return "\n".join(lines)
+
 
     # ── Public accessors ─────────────────────────────────────────────
 

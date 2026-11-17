@@ -218,8 +218,9 @@ class BotConfig:
     # === Voice 标准模式（A 档：STT + LLM + TTS 拼装，全双工不可用时的降级/省钱通道）===
     # A 档总开关：与 B 档独立。两者都开时 B 优先，B 连接失败自动降级 A。
     voice_standard_enabled: bool = True
-    # 识别通道：browser（浏览器内置识别，免费，Edge 国内可用）| openai（云端 /audio/transcriptions）
-    voice_stt_provider: str = "browser"
+    # 识别通道：openai（云端 /audio/transcriptions，默认复用免费语音模型）；
+    # 没有可用密钥时由前端状态接口自动回落 browser（浏览器内置识别）。
+    voice_stt_provider: str = "openai"
     # 云端语音识别（OpenAI 兼容 /audio/transcriptions），stt_provider=openai 时生效。
     voice_stt_base_url: str = ""
     voice_stt_api_key: str = ""
@@ -258,6 +259,14 @@ class BotConfig:
     voice_volc_api_key: str = ""
     # 主打音色：Vivi2.0/小何2.0/云舟2.0/小天2.0
     voice_volc_voice: str = "zh_female_vv_uranus_bigtts"
+
+    # === 聊天/日记语音转写 ===
+    # 聊天/日记语音转写：默认只用硅基流动免费模型，不自动切付费火山；
+    # 只有显式把 provider 设为 auto 才保留旧火山备用行为。
+    journal_asr_provider: str = "siliconflow"
+    journal_asr_silicon_key: str = ""
+    journal_asr_silicon_base_url: str = "https://api.siliconflow.cn/v1"
+    journal_asr_silicon_model: str = "FunAudioLLM/SenseVoiceSmall"
 
     # === WeChat Backend ===
     wechat_backend: str = "wcdb"
@@ -358,8 +367,8 @@ def load_config() -> BotConfig:
         "ai_provider_extra_body": os.getenv("AI_PROVIDER_EXTRA_BODY", "").strip(),
         # Voice 标准模式（A 档）
         "voice_standard_enabled": os.getenv("VOICE_STANDARD_ENABLED", "true").strip().lower() != "false",
-        "voice_stt_provider": (os.getenv("VOICE_STT_PROVIDER", "browser").strip().lower()
-                               or "browser"),
+        "voice_stt_provider": (os.getenv("VOICE_STT_PROVIDER", "openai").strip().lower()
+                               or "openai"),
         "voice_stt_base_url": os.getenv("VOICE_STT_BASE_URL", "").strip(),
         "voice_stt_api_key": os.getenv("VOICE_STT_API_KEY", "").strip(),
         "voice_stt_model": os.getenv("VOICE_STT_MODEL", "whisper-1").strip() or "whisper-1",
@@ -397,6 +406,17 @@ def load_config() -> BotConfig:
         "voice_volc_voice": (os.getenv("VOICE_VOLC_VOICE",
                                        "zh_female_vv_uranus_bigtts").strip()
                              or "zh_female_vv_uranus_bigtts"),
+        # 聊天/日记语音转写：默认只用硅基流动免费模型；显式 auto 才保留火山备用
+        "journal_asr_provider": (os.getenv("JOURNAL_ASR_PROVIDER", "siliconflow").strip().lower()
+                                 or "siliconflow"),
+        "journal_asr_silicon_key": (os.getenv("JOURNAL_ASR_SILICON_KEY", "")
+                                     or os.getenv("SILICONFLOW_API_KEY", "")).strip(),
+        "journal_asr_silicon_base_url": (os.getenv(
+            "JOURNAL_ASR_SILICON_BASE_URL", "https://api.siliconflow.cn/v1").strip()
+            or "https://api.siliconflow.cn/v1"),
+        "journal_asr_silicon_model": (os.getenv(
+            "JOURNAL_ASR_SILICON_MODEL", "FunAudioLLM/SenseVoiceSmall").strip()
+            or "FunAudioLLM/SenseVoiceSmall"),
     }
 
     _validate_config(kwargs)

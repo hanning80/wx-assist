@@ -254,6 +254,31 @@ def _qwen_tts_synthesize(text: str, cfg) -> bytes:
 
 # ── OpenAI 兼容 STT ─────────────────────────────────────────────────
 
+def _stt_cloud_settings(cfg) -> tuple[str, str, str]:
+    """统一取语音识别云端配置。
+
+    语音助手故意不再强制单独填一套 Key：没有配置 VOICE_STT_API_KEY 时，
+    自动复用日记/聊天转写用的硅基流动免费通道，保证系统里所有语音识别
+    走同一个模型；如果用户明确填了独立语音 Key，则优先尊重独立配置。
+    """
+    base = (getattr(cfg, "voice_stt_base_url", "") or "").strip().rstrip("/")
+    key = (getattr(cfg, "voice_stt_api_key", "") or "").strip()
+    model = (getattr(cfg, "voice_stt_model", "") or "").strip()
+
+    if not key:
+        silicon_key = (getattr(cfg, "journal_asr_silicon_key", "") or "").strip()
+        if silicon_key:
+            key = silicon_key
+            if not base:
+                base = (getattr(cfg, "journal_asr_silicon_base_url", "")
+                        or "https://api.siliconflow.cn/v1").strip().rstrip("/")
+            if not model or model == "whisper-1":
+                model = (getattr(cfg, "journal_asr_silicon_model", "")
+                         or "FunAudioLLM/SenseVoiceSmall").strip()
+
+    return base, key, (model or "whisper-1")
+
+
 def transcribe(audio_bytes: bytes, content_type: str = "audio/wav",
                filename: str = "audio.wav", language: str = "zh") -> dict:
     """语音转文字（OpenAI 兼容 /audio/transcriptions）。
@@ -261,18 +286,22 @@ def transcribe(audio_bytes: bytes, content_type: str = "audio/wav",
     返回 {"ok": True, "text": ...} 或 {"ok": False, "error": ...}。
     """
     cfg = load_config()
-    base = (cfg.voice_stt_base_url or "").rstrip("/")
-    if not base or not cfg.voice_stt_api_key:
+    base, key, model = _stt_cloud_settings(cfg)
+    if not base or not key:
         return {"ok": False, "error": "not_configured"}
 
     url = base + "/audio/transcriptions"
+    # 硅基流动的 SenseVoice 只认 file/model，不传 language；保留对其他
+    # OpenAI 兼容服务的 language 支持，避免切换供应商时行为倒退。
+    form_data = {"model": model}
+    if "siliconflow" not in base.lower():
+        form_data["language"] = language or "zh"
     try:
         resp = requests.post(
             url,
-            headers={"Authorization": f"Bearer {cfg.voice_stt_api_key}"},
+            headers={"Authorization": f"Bearer {key}"},
             files={"file": (filename, audio_bytes, content_type or "audio/wav")},
-            data={"model": cfg.voice_stt_model or "whisper-1",
-                  "language": language or "zh"},
+            data=form_data,
             timeout=_STT_TIMEOUT_SEC,
         )
     except requests.RequestException as e:
@@ -306,10 +335,11 @@ def voice_status() -> dict:
     except Exception:
         edge_ok = False
 
-    # STT：browser 永远可用（取决于浏览器）；openai 需配置完整
+    # STT：browser 永远可用（取决于浏览器）；openai 需配置完整。
+    # 独立语音 Key 没填时，自动复用日记/聊天转写的硅基流动免费通道。
     stt_provider = (cfg.voice_stt_provider or "browser").lower()
-    if stt_provider == "openai" and not (cfg.voice_stt_base_url
-                                         and cfg.voice_stt_api_key):
+    stt_base, stt_key, stt_model = _stt_cloud_settings(cfg)
+    if stt_provider == "openai" and not (stt_base and stt_key):
         stt_provider = "browser"
 
     # TTS 实际可用性归一
@@ -328,7 +358,7 @@ def voice_status() -> dict:
         "standard_enabled": standard_enabled,
         "stt_provider": stt_provider,                       # browser | openai
         "stt_cloud": stt_provider == "openai",             # 兼容旧前端判断
-        "stt_model": cfg.voice_stt_model,
+        "stt_model": stt_model,
         "tts_provider": tts_provider,                      # edge | qwen | openai
         "tts_voice": cfg.voice_tts_voice or DEFAULT_EDGE_VOICE,
         "tts_qwen_model": cfg.voice_tts_qwen_model,

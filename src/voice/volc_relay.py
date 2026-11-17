@@ -26,6 +26,7 @@ from src.config import load_config
 from src.voice.call_logger import VoiceCallLogger, new_call_id
 from src.voice.realtime_relay import (
     VOICE_INSTRUCTIONS,
+    augment_personal_memory,
     build_voice_tool_schemas,
 )
 
@@ -446,7 +447,9 @@ class VolcRelay:
         except (ValueError, TypeError):
             args = {}
         try:
-            return self._registry.execute(name, args)
+            result = self._registry.execute(name, args)
+            query = str(args.get("query") or "")
+            return augment_personal_memory(self._registry, name, query, result)
         except Exception as e:
             logger.warning("[VOICE-VOLC] sid=%s tool %s failed: %s", self.sid, name, e)
             return f"工具执行出错: {e}"

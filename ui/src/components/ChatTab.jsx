@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Chats, ChatsCircle, CaretDown, MagnifyingGlass, Clock, Download, ArrowsClockwise, Play, Pause, X, FileText, Image, VideoCamera, Microphone, Link, Eye, User, ArrowDown, Users, ChatCircleDots, ShieldCheck, ShieldWarning } from '@phosphor-icons/react'
 import { ImageLightbox, Avatar, API_BASE, getWsUrl } from './SharedComponents'
@@ -879,7 +879,7 @@ export default function ChatTab() {
   const foldedViewSessions = foldedViewType === 'oa' ? oaSessions : foldedSessions
 
   return (
-    <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}>
+    <motion.div initial={{ opacity: 1, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}>
       <div className="flex flex-col lg:flex-row gap-4 h-[calc(100dvh-140px)]">
         {/* ── Left Panel ── */}
         <div className="w-full lg:w-72 lg:flex-shrink-0 flex flex-col border border-border-main rounded-xl bg-bg-card overflow-hidden max-h-[25vh] lg:max-h-none">
@@ -1283,7 +1283,7 @@ export default function ChatTab() {
               <AnimatePresence>
                 {!autoScroll && messages.length > 0 && (
                   <motion.button
-                    initial={{ opacity: 0, y: 8 }}
+                    initial={{ opacity: 1, y: 8 }}
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: 8 }}
                     onClick={scrollToBottom}

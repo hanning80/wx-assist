@@ -18,7 +18,7 @@ from hashlib import sha1
 from base64 import b64encode
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, parse_qs, urlparse
 
 # Used in _handle_request() conditionals; must be imported at module level
 # to avoid UnboundLocalError in branches that reference it.
@@ -367,42 +367,41 @@ def _list_dir_entries(target: Path) -> list[dict]:
 
 
 def _read_recent_logs():
-    """Read the last 500 lines from the bot log file. Returns JSON-serializable list.
+    """Read the last lines from bot.log (+ 独立日记线程日志).
 
-    Log format: ``YYYY-MM-DD HH:MM:SS [LEVEL] module: message``
-    (configured in src/utils/logging_config.py).
+    日志格式：``YYYY-MM-DD HH:MM:SS [LEVEL] module: message``
+    （由 src/utils/logging_config.py 配置）。
 
-    Uses seek-from-end to avoid reading the entire log file into memory
-    (bot.log can grow to 100+ MB over days of operation).
+    为什么要合并：正式运行时日记线程在主程序里，只写 bot.log；
+    但面板单独跑时，日记线程是另一个进程，两份进程同时轮转同一个
+    bot.log 会互相抢文件（Windows 下改名会失败）。所以独立线程写
+    data/journal_worker.log，这里合并展示，页面看到的仍是完整一条时间线。
     """
     import re
     # CWD is set to app home by desktop.py; relative path works for both
     # frozen (EXE dir) and dev (project root) modes.
-    log_path = Path("data/bot.log")
-    if not log_path.exists():
-        return {"ok": True, "logs": [], "message": "日志文件尚未创建"}
-    try:
-        # Read only the tail of the file (last ~256KB) instead of the whole thing.
-        # 256KB is enough for ~500 lines of typical log entries (~500 bytes each).
-        TAIL_BYTES = 256 * 1024
-        file_size = log_path.stat().st_size
-        with open(log_path, "rb") as f:
-            if file_size > TAIL_BYTES:
-                f.seek(file_size - TAIL_BYTES)
-                # Discard the first (partial) line since we likely landed mid-line
-                f.readline()
-            raw = f.read()
-        lines = raw.decode("utf-8", errors="replace").splitlines()
-        # Return last 2000 lines instead of 500, so LLM-DETAIL long lines
-        # don't push useful context out of the log viewer too quickly.
-        recent = lines[-2000:]
-        # Regex: timestamp [LEVEL] module: message
-        pattern = re.compile(
-            r'^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+'
-            r'\[(DEBUG|INFO|WARNING|ERROR)\]\s+'
-            r'([^:]+):\s+'
-            r'(.*)$'
-        )
+    TAIL_BYTES = 256 * 1024
+    pattern = re.compile(
+        r'^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+'
+        r'\[(DEBUG|INFO|WARNING|ERROR)\]\s+'
+        r'([^:]+):\s+'
+        r'(.*)$'
+    )
+
+    def _tail_entries(log_path):
+        if not log_path.exists():
+            return []
+        try:
+            file_size = log_path.stat().st_size
+            with open(log_path, "rb") as f:
+                if file_size > TAIL_BYTES:
+                    f.seek(file_size - TAIL_BYTES)
+                    # Discard the first (partial) line since we likely landed mid-line
+                    f.readline()
+                raw = f.read()
+            recent = raw.decode("utf-8", errors="replace").splitlines()[-2000:]
+        except Exception:
+            return []
         entries = []
         for line in recent:
             entry = {"raw": line}
@@ -419,7 +418,27 @@ def _read_recent_logs():
                 entry["module"] = ""
                 entry["msg"] = line
             entries.append(entry)
-        return {"ok": True, "logs": entries}
+        return entries
+
+    try:
+        merged = (_tail_entries(Path("data/bot.log"))
+                  + _tail_entries(Path("data/journal_worker.log")))
+        if not merged:
+            return {"ok": True, "logs": [], "message": "日志文件尚未创建"}
+        # 按时间戳排序；没有时间戳的续行（traceback 等）跟随前一条，
+        # 不能因为空串被排到最前面。
+        last_ts = ""
+        for entry in merged:
+            if entry.get("ts"):
+                last_ts = entry["ts"]
+            else:
+                entry["_sort_ts"] = last_ts
+        for entry in merged:
+            entry.setdefault("_sort_ts", entry.get("ts") or "")
+        merged.sort(key=lambda e: e["_sort_ts"])
+        for entry in merged:
+            entry.pop("_sort_ts", None)
+        return {"ok": True, "logs": merged[-2000:]}
     except Exception as e:
         return {"ok": False, "logs": [], "error": str(e)}
 
@@ -1047,6 +1066,11 @@ def register_ilink_callback(callback):
     _ilink_message_callback = callback
 
 
+def has_ilink_callback() -> bool:
+    """对话助手有没有接管 iLink。没接管时日记线程才自己接指令。"""
+    return _ilink_message_callback is not None
+
+
 def _start_ilink_receiver() -> bool:
     """Start the iLink receiver for the currently running Bot."""
     if not _bot_control.is_running():
@@ -1088,12 +1112,24 @@ def _stop_ilink_receiver():
 # ── Agent engine ─────────────────────────────────────────────────────
 
 _agent_engine = None
+_voice_tool_registry = None
 
 
 def register_agent_engine(engine):
     """Register the AgentEngine instance for web API access."""
     global _agent_engine
     _agent_engine = engine
+
+
+def register_voice_tool_registry(registry):
+    """面板单独运行时给实时语音用的只读工具注册表。"""
+    global _voice_tool_registry
+    _voice_tool_registry = registry
+
+
+def get_agent_engine():
+    """供日记/语音等旁路读取当前对话助手；没有就返回 None。"""
+    return _agent_engine
 
 
 def _im_channel_snapshot():
@@ -1372,7 +1408,8 @@ class _Lanauth:
     - Each device that connects via /?lan=xxx gets its own cookie session
       for auth middleware, recorded by IP for the device list.
     - pair_token is NOT single-use and NOT expiring — lasts until disable.
-    - Backend restart resets everything (acceptable per user requirement).
+    - 开关和配对令牌落盘到 data/lan_state.json：重启后仍能扫码，
+      不需要每次重新开一次；点关闭才删除。
     """
 
     def __init__(self):
@@ -1382,6 +1419,28 @@ class _Lanauth:
         # sessions: session_token -> {ip, connected_at}
         # Used for auth middleware + device list display
         self._sessions = {}
+        self._state_path = Path(__file__).resolve().parents[2] / "data" / "lan_state.json"
+        self._load_state()
+
+    def _load_state(self):
+        try:
+            data = json.loads(self._state_path.read_text(encoding="utf-8"))
+            token = str(data.get("token") or "").strip()
+            if data.get("enabled") and token:
+                self._lan_enabled = True
+                self._pair_token = token
+        except (OSError, ValueError, TypeError):
+            pass
+
+    def _save_state(self):
+        try:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            self._state_path.write_text(json.dumps({
+                "enabled": self._lan_enabled,
+                "token": self._pair_token or "",
+            }, ensure_ascii=False), encoding="utf-8")
+        except OSError as e:
+            logger.warning("保存局域网访问状态失败: %s", e)
 
     @property
     def lan_enabled(self):
@@ -1392,6 +1451,7 @@ class _Lanauth:
         with self._lock:
             self._lan_enabled = True
             self._pair_token = os.urandom(16).hex()
+            self._save_state()
             return self._pair_token, _get_lan_ip()
 
     def disable(self):
@@ -1400,6 +1460,7 @@ class _Lanauth:
             self._lan_enabled = False
             self._pair_token = None
             self._sessions.clear()
+            self._save_state()
 
     def connect_device(self, pair_token: str, client_ip: str = "") -> str | None:
         """Validate pair token, register device session, return cookie session token.
@@ -1599,7 +1660,18 @@ class _UIHandler(SimpleHTTPRequestHandler):
         # Extract path without query params
         post_path = self.path.split("?")[0] if "?" in self.path else self.path
 
+        # 日记页的规则表单走日记处理器；不能落进下面的接口白名单，否则 405。
+        if post_path.startswith("/journal"):
+            self._handle_request()
+            return
+
         if post_path in ("/api/config", "/api/config/import", "/api/config/test-connection", "/api/start", "/api/stop",
+                         "/api/journal/cloud",
+                         "/api/journal/restore/run",
+                         "/api/journal/voice/backfill",
+                         "/api/journal/media/scan",
+                         "/api/journal/media/favorites",
+                         "/api/journal/media/chat",
                          "/api/update/download", "/api/update/cancel", "/api/update/skip", "/api/update/install",
                          "/api/app/close-intent", "/api/app/show", "/api/app/exit",
                          "/api/lan/enable", "/api/lan/disable", "/api/lan/kick",
@@ -1684,6 +1756,19 @@ class _UIHandler(SimpleHTTPRequestHandler):
 
     def _handle_request(self):
         req_t0 = time.monotonic()
+        # ── 日记与复盘（/journal 开头的页面）────────────────────────
+        if self.command in ("GET", "POST") and self.path.startswith("/journal"):
+            try:
+                from src.journal.web import handle as journal_handle
+                if journal_handle(self):
+                    return
+            except Exception as e:
+                logger.warning("日记页面处理失败: %s", e)
+                try:
+                    self.send_json({"ok": False, "error": str(e)}, 500)
+                    return
+                except Exception:
+                    pass
         if self.path.startswith("/api/chat/") or self.path.startswith("/api/fav/"):
             logger.info("[REQ-TRACE] start %s %s thread=%s", self.command, self.path, threading.current_thread().name)
         # ── Feishu event webhook ───────────────────────────────────
@@ -1887,6 +1972,8 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 from src.voice.realtime_relay import realtime_configured
                 from src.voice.volc_relay import volc_configured, VOLC_VOICES
                 cfg = load_config()
+                from src.voice.providers import _stt_cloud_settings
+                stt_base, stt_key, stt_model = _stt_cloud_settings(cfg)
                 qwen_key = getattr(cfg, "voice_realtime_api_key", "") or ""
                 volc_key = getattr(cfg, "voice_volc_api_key", "") or ""
                 provider = (getattr(cfg, "voice_rt_provider", "qwen") or "qwen").lower()
@@ -1917,9 +2004,11 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     # A 档
                     "standard_enabled": getattr(cfg, "voice_standard_enabled", True),
                     "stt_provider": getattr(cfg, "voice_stt_provider", "browser"),
-                    "stt_base_url": cfg.voice_stt_base_url,
-                    "stt_has_key": bool(cfg.voice_stt_api_key),
-                    "stt_model": cfg.voice_stt_model,
+                    # A 档：网页语音识别统一走免费通道；独立 Key 为空时
+                    # 自动复用日记/聊天转写的硅基流动配置，页面显示真实状态。
+                    "stt_base_url": stt_base,
+                    "stt_has_key": bool(stt_key),
+                    "stt_model": stt_model,
                     "tts_provider": cfg.voice_tts_provider,
                     "tts_base_url": cfg.voice_tts_base_url,
                     "tts_has_key": bool(cfg.voice_tts_api_key),
@@ -2164,6 +2253,254 @@ class _UIHandler(SimpleHTTPRequestHandler):
             self.send_json({"ok": True, "reset_pending": pending, **rag_status.snapshot()})
             return
 
+        # ── API: 换机恢复（只生成恢复目录，不覆盖正在用的库）──────────
+        if self.path == "/api/journal/restore/latest" and self.command == "GET":
+            try:
+                from src.journal.cloud.restore import latest_export, read_manifest
+                info = latest_export()
+                f = info.get("file") or {}
+                manifest = read_manifest()
+                self.send_json({
+                    "ok": True,
+                    "filename": f.get("filename") or "",
+                    "file_size": int(f.get("file_size") or 0),
+                    "file_mtime": int(f.get("file_mtime") or 0),
+                    "has_manifest": bool(manifest),
+                    "manifest_counts": (manifest or {}).get("counts") or {},
+                    "manifest_last_rowid": int((manifest or {}).get("last_rowid") or 0),
+                    "manifest_exported_at": (manifest or {}).get("last_exported_at") or "",
+                })
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
+        if self.path == "/api/journal/restore/run" and self.command == "POST":
+            try:
+                from src.journal.cloud.restore import restore_bundle
+                r = restore_bundle()
+                self.send_json({
+                    "ok": True,
+                    "out_dir": r.get("out_dir"),
+                    "merged": r.get("merged"),
+                    "increments": r.get("increments"),
+                    "counts": r.get("counts") or {},
+                    "message": "已从云端恢复并生成新的本地库；当前正在用的库没有被覆盖。",
+                })
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
+        # ── API: 历史语音回溯进度 ──────────────────────────────────────
+        if self.path == "/api/journal/voice" and self.command == "GET":
+            try:
+                from src.journal.store import JournalStore
+                from src.journal.voice_queue import queue_stats
+                store = JournalStore()
+                db = Path(store.db_path).parent / "messages.db"
+                self.send_json({"ok": True, **queue_stats(db)})
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
+        # ── API: 媒体资产（图片/视频原件只在云端，面板只看签名链接）──
+        if self.path == "/api/journal/media" and self.command == "GET":
+            try:
+                from src.journal.store import JournalStore
+                from src.journal.media import media_item, signed_url
+                from src.journal.cloud.provider import make_client
+                from urllib.parse import parse_qs, urlparse
+                q = parse_qs(urlparse(self.path).query)
+                kind = (q.get("kind") or [""])[0]
+                limit = int((q.get("limit") or ["60"])[0])
+                offset = int((q.get("offset") or ["0"])[0])
+                store = JournalStore()
+                client = None
+                try:
+                    client = make_client()
+                except Exception:
+                    client = None
+                rows = store.list_media_assets(limit=limit, offset=offset, kind=kind)
+                items = [media_item(store, r, client=client) for r in rows]
+                self.send_json({"ok": True, "data": items,
+                                "counts": store.media_counts(),
+                                "signed": bool(client)})
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
+        if self.path.startswith("/api/journal/media/") and self.command == "GET":
+            path_only = self.path.split("?", 1)[0]
+            if path_only.endswith("/file"):
+                try:
+                    from urllib.parse import parse_qs, urlparse, unquote
+                    from urllib.request import urlopen
+                    from src.journal.store import JournalStore
+                    from src.journal.cloud.provider import make_client
+                    asset_id = unquote(path_only.split("/")[-2])
+                    role = (parse_qs(urlparse(self.path).query).get("role") or ["preview"])[0]
+                    store = JournalStore()
+                    row = store.media_asset(asset_id)
+                    if row is None:
+                        self.send_json({"ok": False, "error": "媒体不存在"}, 404)
+                        return
+                    key = row["original_key"] if role == "original" else (row["preview_key"] or row["original_key"])
+                    if not key:
+                        self.send_json({"ok": False, "error": "没有可显示的媒体对象"}, 404)
+                        return
+                    client = make_client()
+                    u = client.download_url(key).get("https_download_url") or ""
+                    if not u:
+                        self.send_json({"ok": False, "error": "签名地址生成失败"}, 502)
+                        return
+                    with urlopen(u, timeout=20) as resp:
+                        data = resp.read()
+                        ctype = resp.headers.get("Content-Type") or "application/octet-stream"
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header("Cache-Control", "private, max-age=3600")
+                    self.end_headers()
+                    self.wfile.write(data)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("媒体代理失败: %s", exc)
+                    self.send_json({"ok": False, "error": str(exc)}, 502)
+                return
+
+            try:
+                from src.journal.store import JournalStore
+                from src.journal.media import media_item
+                from src.journal.cloud.provider import make_client
+                from urllib.parse import unquote
+                asset_id = unquote(self.path.rsplit("/", 1)[-1])
+                store = JournalStore()
+                row = store.media_asset(asset_id)
+                if row is None:
+                    self.send_json({"ok": False, "error": "媒体不存在"})
+                else:
+                    client = None
+                    try:
+                        client = make_client()
+                    except Exception:
+                        client = None
+                    self.send_json({"ok": True, "data": media_item(store, row, client=client)})
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
+        if self.path == "/api/journal/media/chat" and self.command == "POST":
+            try:
+                from src.journal.store import JournalStore
+                from src.journal.media import scan_chat_media
+                body = {}
+                try:
+                    n = int(self.headers.get("Content-Length", 0) or 0)
+                    if n:
+                        body = json.loads(self.rfile.read(min(n, self.MAX_BODY_SIZE)) or b"{}")
+                except Exception:
+                    body = {}
+                limit = min(max(1, int(body.get("limit") or 20)), 60)
+                store = JournalStore()
+                db = Path(store.db_path).parent / "messages.db"
+                from src.journal.media import media_stats
+                self.send_json({"ok": True, **scan_chat_media(store, limit=limit),
+                                "stats": media_stats(str(db))})
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
+        if self.path == "/api/journal/media/favorites" and self.command == "POST":
+            try:
+                from src.journal.store import JournalStore
+                from src.journal.media import sync_favorite_images
+                body = {}
+                try:
+                    n = int(self.headers.get("Content-Length", 0) or 0)
+                    if n:
+                        body = json.loads(self.rfile.read(min(n, self.MAX_BODY_SIZE)) or b"{}")
+                except Exception:
+                    body = {}
+                limit = min(max(1, int(body.get("limit") or 60)), 200)
+                store = JournalStore()
+                db = Path(store.db_path).parent / "messages.db"
+                from src.journal.media import media_stats
+                self.send_json({"ok": True, **sync_favorite_images(store, limit=limit),
+                                "stats": media_stats(str(db))})
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
+        if self.path == "/api/journal/voice/backfill" and self.command == "POST":
+            try:
+                from src.journal.store import JournalStore
+                from src.journal.voice_queue import backfill_placeholders, queue_stats
+                store = JournalStore()
+                db = Path(store.db_path).parent / "messages.db"
+                body = {}
+                try:
+                    n = int(self.headers.get("Content-Length", 0) or 0)
+                    if n:
+                        body = json.loads(self.rfile.read(min(n, self.MAX_BODY_SIZE)) or b"{}")
+                except Exception:
+                    body = {}
+                limit = max(0, int(body.get("limit") or 0))
+                r = backfill_placeholders(db, limit=limit)
+                self.send_json({"ok": True, **r, **queue_stats(db)})
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
+        if self.path == "/api/journal/media/scan" and self.command == "POST":
+            try:
+                from src.journal.store import JournalStore
+                from src.journal.media import scan_attachments
+                body = {}
+                try:
+                    n = int(self.headers.get("Content-Length", 0) or 0)
+                    if n:
+                        body = json.loads(self.rfile.read(min(n, self.MAX_BODY_SIZE)) or b"{}")
+                except Exception:
+                    body = {}
+                limit = min(max(1, int(body.get("limit") or 10)), 30)
+                store = JournalStore()
+                self.send_json({"ok": True, **scan_attachments(store, limit=limit)})
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
+        # ── API: 日记按天提醒（与 cron 任务分开，但要能看见）──────────
+        if self.path == "/api/journal/reminders" and self.command == "GET":
+            try:
+                from src.journal.store import JournalStore
+                store = JournalStore()
+                out = []
+                for c in store.chains("active"):
+                    tasks = store.tasks_of_chain(int(c["id"]))
+                    pending = [t for t in tasks if t["status"] == "pending"]
+                    sent = [t for t in tasks if t["status"] == "sent"]
+                    out.append({
+                        "id": c["id"], "title": c["title"], "object": c["object"] or "",
+                        "action": c["action"] or "", "start_date": c["start_date"],
+                        "days": c["days"], "daily_time": c["daily_time"],
+                        "state": c["status"],
+                        "sent": len(sent), "pending": len(pending), "total": len(tasks),
+                        "next_at": pending[0]["fire_at"] if pending else "",
+                    })
+                self.send_json({"ok": True, "data": out})
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)})
+            return
+
+        # ── API: 模型用量与花费 ───────────────────────────────────────
+        if self.path.startswith("/api/usage") and self.command == "GET":
+            from src.llm_usage import usage_summary
+            try:
+                data = usage_summary()
+            except Exception as exc:  # noqa: BLE001
+                self.send_json({"ok": False, "error": str(exc)})
+                return
+            self.send_json({"ok": True, **data})
+            return
+
         if self.path == "/api/load-config":
             env_path = _find_or_create_env()
             raw = {}
@@ -2192,9 +2529,76 @@ class _UIHandler(SimpleHTTPRequestHandler):
                     "key_preview": raw.get("WCDB_KEY", ""),
                     "close_action": raw.get("CLOSE_ACTION", "ask"),
                     "auto_check_update": raw.get("AUTO_CHECK_UPDATE", "true").lower() == "true",
+                    "ai_thinking": raw.get("AI_THINKING", "1").lower() not in ("0", "false", "off"),
                 },
                 "detected_data_dir": _detect_default_data_dir(),
             })
+            return
+
+        # ── API: 云存储（日记/聊天知识库）配置查看 ───────────────────────
+        if self.path == "/api/journal/cloud" and self.command == "GET":
+            try:
+                from src.journal.cloud.weiyun import load_token
+                from src.journal.cloud.provider import (
+                    provider_name, display_name, configured_providers,
+                )
+                tok = load_token()
+                env_path = _find_or_create_env()
+                raw = {}
+                if env_path.exists():
+                    for line in env_path.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            raw[k.strip()] = v.strip()
+                last = ""
+                try:
+                    from src.journal.store import JournalStore
+                    last = JournalStore().last_snapshot_at() or ""
+                except Exception:  # noqa: BLE001
+                    last = ""
+                provider = provider_name()
+                ak = raw.get("OSS_ACCESS_KEY_ID", "")
+                sk = raw.get("OSS_ACCESS_KEY_SECRET", "")
+                cos_id = raw.get("COS_SECRET_ID", "")
+                cos_key = raw.get("COS_SECRET_KEY", "")
+                prefix = (raw.get("COS_PREFIX", "摘星日记") if provider == "cos"
+                          else raw.get("OSS_PREFIX", "摘星日记"))
+                self.send_json({
+                    "ok": True,
+                    "provider": provider,
+                    "provider_name": display_name(),
+                    "providers": configured_providers(),
+                    "enabled": raw.get("JOURNAL_CLOUD_ENABLED", "0").lower() in ("1", "true", "yes"),
+                    "last_snapshot": last,
+                    "folder": prefix,
+                    # 微云（保留旧配置，不主动迁走）
+                    "token_set": bool(tok),
+                    "token_preview": (tok[:4] + "…" + tok[-4:]) if len(tok) >= 8 else "",
+                    # OSS
+                    "oss_bucket": raw.get("OSS_BUCKET", ""),
+                    "oss_endpoint": raw.get("OSS_ENDPOINT", "https://oss-cn-beijing.aliyuncs.com"),
+                    "oss_region": raw.get("OSS_REGION", "oss-cn-beijing"),
+                    "oss_prefix": raw.get("OSS_PREFIX", "摘星日记"),
+                    "oss_access_key_id_set": bool(ak),
+                    "oss_access_key_id_preview": (ak[:4] + "…" + ak[-4:]) if len(ak) >= 8 else "",
+                    "oss_access_key_secret_set": bool(sk),
+                    "oss_access_key_secret_preview": "已保存" if sk else "",
+                    # COS
+                    "cos_bucket": raw.get("COS_BUCKET", ""),
+                    "cos_region": raw.get("COS_REGION", "ap-beijing"),
+                    "cos_prefix": raw.get("COS_PREFIX", "摘星日记"),
+                    "cos_secret_id_set": bool(cos_id),
+                    "cos_secret_id_preview": (cos_id[:4] + "…" + cos_id[-4:]) if len(cos_id) >= 8 else "",
+                    "cos_secret_key_set": bool(cos_key),
+                    "cos_secret_key_preview": "已保存" if cos_key else "",
+                    # 图片/视频：上云与参与问答检索分开控制
+                    "media_upload": raw.get("JOURNAL_MEDIA_UPLOAD", "1").lower() in ("1", "true", "yes", "on"),
+                    "media_rag": raw.get("JOURNAL_MEDIA_RAG", "0").lower() in ("1", "true", "yes", "on"),
+                })
+            except Exception as e:  # noqa: BLE001
+                logger.exception("读取云存储配置失败")
+                self.send_json({"ok": False, "error": str(e)})
             return
 
         # ── API: Export config ───────────────────────────────────────
@@ -2236,6 +2640,205 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(e)})
             return
 
+        # ── API: 云存储配置保存并测试 ────────────────────────────────
+        if self.path == "/api/journal/cloud":
+            content_len = min(int(self.headers.get("Content-Length", 0)), self.MAX_BODY_SIZE)
+            body = self.rfile.read(content_len) if content_len else b"{}"
+            try:
+                data = json.loads(body)
+                env_path = _find_or_create_env()
+                raw = {}
+                if env_path.exists():
+                    for line in env_path.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            raw[k.strip()] = v.strip()
+
+                def _write_env(updates: dict):
+                    lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+                    new_lines, seen = [], set()
+                    for line in lines:
+                        s = line.strip()
+                        if s and not s.startswith("#") and "=" in s:
+                            k = s.split("=", 1)[0].strip()
+                            if k in updates:
+                                new_lines.append(f"{k}={updates[k]}")
+                                seen.add(k)
+                                continue
+                        new_lines.append(line)
+                    for k, v in updates.items():
+                        if k not in seen:
+                            new_lines.append(f"{k}={v}")
+                    tmp_path = env_path.with_suffix(".tmp")
+                    tmp_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+                    os.replace(tmp_path, env_path)
+
+                provider = str(data.get("provider") or raw.get("CLOUD_PROVIDER") or "oss").strip().lower()
+                if provider in ("aliyun", "aliyun-oss"):
+                    provider = "oss"
+                if provider in ("qcloud", "tencent-cos"):
+                    provider = "cos"
+                test_only = bool(data.get("test_only"))
+
+                if provider == "cos":
+                    sid = str(data.get("cos_secret_id") or "").strip() or raw.get("COS_SECRET_ID", "")
+                    skey = str(data.get("cos_secret_key") or "").strip() or raw.get("COS_SECRET_KEY", "")
+                    bucket = str(data.get("cos_bucket") or "").strip() or raw.get("COS_BUCKET", "")
+                    region = str(data.get("cos_region") or "").strip() or raw.get("COS_REGION", "ap-beijing")
+                    prefix = str(data.get("cos_prefix") or "").strip() or raw.get("COS_PREFIX", "摘星日记")
+                    if not sid or not skey:
+                        self.send_json({"ok": False, "error": "COS SecretId / SecretKey 没有填写"})
+                        return
+                    if not bucket:
+                        self.send_json({"ok": False, "error": "COS 存储桶没有填写"})
+                        return
+                    from src.journal.cloud.cos import CosClient, list_bucket_objects, put_selftest
+                    client = CosClient(sid, skey, region, bucket, prefix)
+                    listed = list_bucket_objects(client, prefix=prefix, limit=5)
+                    put_selftest(client)
+                    if not test_only:
+                        updates = {
+                            "CLOUD_PROVIDER": "cos",
+                            "COS_BUCKET": bucket,
+                            "COS_REGION": region,
+                            "COS_PREFIX": prefix,
+                            "JOURNAL_CLOUD_ENABLED": "1",
+                        }
+                        if str(data.get("cos_secret_id") or "").strip():
+                            updates["COS_SECRET_ID"] = sid
+                        if str(data.get("cos_secret_key") or "").strip():
+                            updates["COS_SECRET_KEY"] = skey
+                        if "media_upload" in data:
+                            updates["JOURNAL_MEDIA_UPLOAD"] = "1" if bool(data.get("media_upload")) else "0"
+                        if "media_rag" in data:
+                            updates["JOURNAL_MEDIA_RAG"] = "1" if bool(data.get("media_rag")) else "0"
+                        _write_env(updates)
+                        os.environ.update(updates)
+                        if "media_rag" in data and not bool(data.get("media_rag")):
+                            try:
+                                from src.journal.recall import purge_media_index
+                                purge_media_index()
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning("关闭媒体检索后清理旧索引失败: %s", e)
+                    self.send_json({
+                        "ok": True,
+                        "provider": "cos",
+                        "message": "COS 连接成功，已能列举并写入存储桶" + ("（测试模式，未保存）" if test_only else "，配置已保存"),
+                        "bucket": bucket,
+                        "region": region,
+                        "prefix": prefix,
+                        "object_count_preview": len(listed),
+                    })
+                    return
+
+                if provider == "oss":
+                    ak = str(data.get("oss_access_key_id") or "").strip() or raw.get("OSS_ACCESS_KEY_ID", "")
+                    sk = str(data.get("oss_access_key_secret") or "").strip() or raw.get("OSS_ACCESS_KEY_SECRET", "")
+                    bucket = str(data.get("oss_bucket") or "").strip() or raw.get("OSS_BUCKET", "")
+                    endpoint = str(data.get("oss_endpoint") or "").strip() or raw.get("OSS_ENDPOINT", "https://oss-cn-beijing.aliyuncs.com")
+                    region = str(data.get("oss_region") or "").strip() or raw.get("OSS_REGION", "oss-cn-beijing")
+                    prefix = str(data.get("oss_prefix") or "").strip() or raw.get("OSS_PREFIX", "摘星日记")
+                    if not ak or not sk:
+                        self.send_json({"ok": False, "error": "OSS AccessKeyId / AccessKeySecret 没有填写"})
+                        return
+                    if not bucket:
+                        self.send_json({"ok": False, "error": "OSS Bucket 没有填写"})
+                        return
+                    if len(ak) < 16 or len(sk) < 20:
+                        self.send_json({"ok": False, "error": "AccessKey 长度不对，请整段复制，不要带空格"})
+                        return
+                    if not endpoint.startswith(("http://", "https://")):
+                        endpoint = "https://" + endpoint
+                    from src.journal.cloud.oss import OssClient, list_bucket_objects, put_selftest
+                    client = OssClient(ak, sk, endpoint, bucket, prefix)
+                    # 1) 列举；2) 写一个 2 字节对象再删掉，确认有写权限。
+                    listed = list_bucket_objects(client, prefix=prefix, limit=5)
+                    put_selftest(client)
+                    if not test_only:
+                        updates = {
+                            "CLOUD_PROVIDER": "oss",
+                            "OSS_ENABLED": "1",
+                            "OSS_BUCKET": bucket,
+                            "OSS_ENDPOINT": endpoint,
+                            "OSS_REGION": region,
+                            "OSS_PREFIX": prefix,
+                            "JOURNAL_CLOUD_ENABLED": "1",
+                        }
+                        if str(data.get("oss_access_key_id") or "").strip():
+                            updates["OSS_ACCESS_KEY_ID"] = ak
+                        if str(data.get("oss_access_key_secret") or "").strip():
+                            updates["OSS_ACCESS_KEY_SECRET"] = sk
+                        if "media_upload" in data:
+                            updates["JOURNAL_MEDIA_UPLOAD"] = "1" if bool(data.get("media_upload")) else "0"
+                        if "media_rag" in data:
+                            updates["JOURNAL_MEDIA_RAG"] = "1" if bool(data.get("media_rag")) else "0"
+                        _write_env(updates)
+                        os.environ.update(updates)
+                        if "media_rag" in data and not bool(data.get("media_rag")):
+                            try:
+                                from src.journal.recall import purge_media_index
+                                purge_media_index()
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning("关闭媒体检索后清理旧索引失败: %s", e)
+                    self.send_json({
+                        "ok": True,
+                        "provider": "oss",
+                        "message": "OSS 连接成功，已能列举并写入私有桶" + ("（测试模式，未保存）" if test_only else "，配置已保存"),
+                        "bucket": bucket,
+                        "endpoint": endpoint,
+                        "prefix": prefix,
+                        "object_count_preview": len(listed),
+                    })
+                    return
+
+                # ── 微云旧入口：保留兼容，避免老用户 Key 突然失效 ──
+                token = str(data.get("token") or "").strip()
+                if not test_only:
+                    if not token:
+                        self.send_json({"ok": False, "error": "没填微云 API Key"})
+                        return
+                    if len(token) < 16 or any(c in token for c in " 　\r\n"):
+                        self.send_json({"ok": False, "error": "这不像一个 API Key，请整段复制粘贴（中间不要有空格）"})
+                        return
+                    old = os.environ.get("WEIYUN_MCP_TOKEN")
+                    os.environ["WEIYUN_MCP_TOKEN"] = token
+                    try:
+                        from src.journal.cloud.weiyun import Weiyun
+                        Weiyun().root_dir_key()
+                    except Exception as e:  # noqa: BLE001
+                        if old:
+                            os.environ["WEIYUN_MCP_TOKEN"] = old
+                        else:
+                            os.environ.pop("WEIYUN_MCP_TOKEN", None)
+                        logger.warning("微云 Key 试连失败: %s", e)
+                        self.send_json({"ok": False,
+                                        "error": "这把 Key 连不上：" + str(e)[:160],
+                                        "hint": "确认复制完整、没过期；原来那把 Key 没有被改动"})
+                        return
+                    _write_env({"WEIYUN_MCP_TOKEN": token,
+                                "JOURNAL_CLOUD_ENABLED": "1",
+                                "CLOUD_PROVIDER": "weiyun"})
+                    os.environ["WEIYUN_MCP_TOKEN"] = token
+                    os.environ["JOURNAL_CLOUD_ENABLED"] = "1"
+                    os.environ["CLOUD_PROVIDER"] = "weiyun"
+
+                from src.journal.cloud.weiyun import Weiyun
+                w = Weiyun()
+                root = w.root_dir_key()
+                self.send_json({
+                    "ok": True,
+                    "provider": "weiyun",
+                    "message": "微云连接成功，云盘根目录已读到",
+                    "root_preview": (root or "")[:10],
+                    "token_preview": (token[:4] + "…" + token[-4:]) if token and len(token) >= 8 else "",
+                })
+            except Exception as e:  # noqa: BLE001
+                logger.warning("云存储配置校验失败: %s", e)
+                self.send_json({"ok": False, "error": "连接失败：" + str(e)[:240],
+                                "hint": "检查 AccessKey、Bucket、Endpoint 是否完整；测试未通过时不会覆盖旧配置"})
+            return
+
         # ── API: Save config ──────────────────────────────────────────
         if self.path == "/api/config":
             content_len = min(int(self.headers.get("Content-Length", 0)), self.MAX_BODY_SIZE)
@@ -2272,6 +2875,11 @@ class _UIHandler(SimpleHTTPRequestHandler):
                         "AUTO_CHECK_UPDATE": (
                             None if config.get("auto_check_update") is None
                             else str(bool(config.get("auto_check_update"))).lower()
+                        ),
+                        # 思考模式开关：关掉省钱，开了更稳
+                        "AI_THINKING": (
+                            None if config.get("ai_thinking") is None
+                            else ("1" if config.get("ai_thinking") else "0")
                         ),
                     }
                     seen = set()
@@ -4188,6 +4796,59 @@ class _UIHandler(SimpleHTTPRequestHandler):
                 self.send_json({"ok": False, "error": str(e)})
                 return
 
+        # ── API: 视频号视频代理（服务端带请求头取流，避免浏览器跨域） ──
+        if self.path.startswith("/api/fav/video"):
+            try:
+                from urllib.parse import parse_qs, urlparse
+                from urllib.request import Request, urlopen
+
+                parsed = self.path.split("?", 1)
+                params = parse_qs(parsed[1]) if len(parsed) > 1 else {}
+                fav_id = int(params.get("id", ["0"])[0] or 0)
+                index = int(params.get("index", ["0"])[0] or 0)
+                if not fav_id:
+                    self.send_json({"ok": False, "error": "缺少收藏编号"})
+                    return
+                row = None
+                if _content_cache is not None:
+                    rows = _content_cache.query(
+                        "SELECT media_json FROM fav_cache WHERE fav_id=?", [fav_id])
+                    row = rows[0] if rows else None
+                if not row:
+                    self.send_json({"ok": False, "error": "没有找到这条收藏的视频"})
+                    return
+                media = json.loads(row["media_json"]) if row["media_json"] else {}
+                videos = media.get("videos", []) if isinstance(media, dict) else []
+                if index < 0 or index >= len(videos):
+                    self.send_json({"ok": False, "error": "没有找到视频地址"})
+                    return
+                video_url = videos[index].get("url") or ""
+                host = urlparse(video_url).hostname or ""
+                if not video_url or not host.endswith("qq.com"):
+                    self.send_json({"ok": False, "error": "视频地址不可用"})
+                    return
+                req = Request(video_url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+                    "Referer": "https://channels.weixin.qq.com/",
+                    "Accept": "*/*",
+                })
+                with urlopen(req, timeout=30) as resp:
+                    data = resp.read()
+                    content_type = resp.headers.get_content_type() or "video/mp4"
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "private, max-age=3600")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(data)
+                return
+            except Exception as e:
+                logger.warning("视频号视频代理失败: %s", e)
+                self.send_json({"ok": False, "error": "视频暂时取不到"})
+                return
+
         # ── API: Favorite image (decrypt from local V2 cache) ──────────────
         if self.path.startswith("/api/fav/image"):
             try:
@@ -4836,12 +5497,8 @@ class _UIHandler(SimpleHTTPRequestHandler):
 
         # ── API: SNS AI Summarize (SSE stream) ──────────────────────
         if self.path == "/api/sns/ai/summarize" and self.command == "POST":
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                body = json.loads(self.rfile.read(length)) if length > 0 else {}
-            except Exception:
-                body = {}
-
+            # 朋友圈按视频号同口径：不做知识库/检索/AI 总结利用。
+            # 页面保留朋友圈列表本身，但不再把朋友圈内容喂给模型。
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
@@ -4849,9 +5506,9 @@ class _UIHandler(SimpleHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("X-Accel-Buffering", "no")
             self.end_headers()
-
-            from src.web.ai_chat import handle_sns_ai_summarize_stream
-            handle_sns_ai_summarize_stream(body, self.wfile)
+            self.wfile.write(
+                'event: error\ndata: {"message":"朋友圈已按视频号口径关闭知识库与 AI 总结"}\n\n'.encode("utf-8")
+            )
             return
 
         # ── API: AI Chat non-streaming endpoints ──────────────────────
@@ -5310,14 +5967,14 @@ class _UIHandler(SimpleHTTPRequestHandler):
         sid = new_call_id()
         logger.info("[VOICE-WS] open sid=%s provider=%s", sid, provider)
 
-        # 取 Agent 工具注册表（MCP 包装层也可能）；Agent 未启动则为 None，
-        # 此时纯语音对话仍可用，只是不能查本地数据。
-        registry = None
+        # 取 Agent 工具注册表（MCP 包装层也可能）；面板单独运行时用
+        # register_voice_tool_registry 注入的只读注册表，否则语音没有工具。
+        registry = _voice_tool_registry
         if _agent_engine is not None:
             try:
                 registry = _agent_engine._tools.registry
             except Exception:
-                registry = None
+                registry = _voice_tool_registry
 
         conn = self.request
         closed = {"v": False}

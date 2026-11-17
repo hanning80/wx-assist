@@ -111,6 +111,14 @@ class MessageRouter:
             return None  # Duplicate — nothing more to do
         self.messages_processed += 1
 
+        # 语音先入库占位，后台队列再转写；这里只登记映射，不阻塞消息处理。
+        if int(msg.get("msg_type") or 0) == 34:
+            try:
+                from .journal.voice_queue import enqueue_message
+                enqueue_message(getattr(self._config, "db_path", "data/messages.db"), msg)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("语音任务登记失败: %s", e)
+
         # ── 静默联系人同步：仅内存去重，失败绝不影响主流程 ──
         if self._contact_syncer is not None:
             try:
@@ -119,7 +127,8 @@ class MessageRouter:
                 pass
 
         # ── RAG incremental indexing (optional, zero impact) ──
-        if self._rag:
+        # 语音先不索引占位；等队列转成文字后由 reindex_message 单独补一条。
+        if self._rag and int(msg.get("msg_type") or 0) != 34:
             self._rag.ingest_one(msg, source="msg")
 
         # ── IM DM → Agent path ──

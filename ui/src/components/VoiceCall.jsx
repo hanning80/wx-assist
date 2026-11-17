@@ -1049,7 +1049,7 @@ export default function VoiceCall({ open, onClose }) {
     <AnimatePresence>
       {open && (
         <motion.div
-          initial={{ opacity: 0 }}
+          initial={{ opacity: 1 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.25 }}
@@ -1198,7 +1198,7 @@ export default function VoiceCall({ open, onClose }) {
                 </span>
                 {toolHint && phase === 'thinking' && (
                   <motion.span
-                    initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}
+                    initial={{ opacity: 1, y: 4 }} animate={{ opacity: 1, y: 0 }}
                     className="flex items-center gap-1 text-[13px] text-emerald-300/90"
                   >
                     <Sparkle size={13} weight="fill" />
@@ -1210,7 +1210,7 @@ export default function VoiceCall({ open, onClose }) {
                   {(phase === 'thinking'
                     || (phase === 'speaking' && channel?.mode !== 'realtime')) && (
                     <motion.button
-                      initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
+                      initial={{ opacity: 1, y: 4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}
                       onClick={interruptSpeaking}
                       className="rounded-full border border-white/15 bg-white/10 px-3.5 py-1 text-[12px] text-stone-200 transition hover:bg-white/15 active:scale-95"
                     >
@@ -1237,7 +1237,7 @@ export default function VoiceCall({ open, onClose }) {
             <AnimatePresence>
               {banner && (
                 <motion.div
-                  initial={{ opacity: 0, y: 12 }}
+                  initial={{ opacity: 1, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
                   exit={{ opacity: 0, y: 8 }}
                   className="mx-5 mb-2 flex items-start gap-2 rounded-2xl border border-amber-300/20 bg-amber-400/10 px-4 py-2.5 text-[13px] text-amber-100"

@@ -84,6 +84,47 @@ CREATE TABLE IF NOT EXISTS contacts_cache (
 
 CREATE INDEX IF NOT EXISTS idx_contact_display
     ON contacts_cache(display_name);
+
+-- 语音转写队列：入库时只登记映射，后台再慢慢转写。
+-- 不把音频本身入库，音频仍走微信本地缓存，转完即删。
+CREATE TABLE IF NOT EXISTS voice_jobs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    message_id  TEXT    NOT NULL UNIQUE,
+    chat_id     TEXT    NOT NULL,
+    local_id    INTEGER,
+    server_id   INTEGER,
+    msg_time    INTEGER NOT NULL DEFAULT 0,
+    state       TEXT    NOT NULL DEFAULT 'pending',
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    text        TEXT    NOT NULL DEFAULT '',
+    engine      TEXT    NOT NULL DEFAULT '',
+    error       TEXT    NOT NULL DEFAULT '',
+    cloud_dirty INTEGER NOT NULL DEFAULT 0,
+    created_at  INTEGER NOT NULL DEFAULT 0,
+    updated_at  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_voice_jobs_state
+    ON voice_jobs(state, id);
+
+-- 聊天图片/视频原始 XML 旁路。messages.content 仍保持清洗后的可读文字；
+-- 媒体原文单独留一层，后台再按 md5 回微信缓存取原件、上 OSS。
+CREATE TABLE IF NOT EXISTS media_raw (
+    message_id   TEXT    PRIMARY KEY,
+    chat_id      TEXT    NOT NULL,
+    local_id     INTEGER,
+    server_id    INTEGER,
+    msg_type     INTEGER NOT NULL DEFAULT 0,
+    msg_time     INTEGER NOT NULL DEFAULT 0,
+    raw_content  TEXT    NOT NULL DEFAULT '',
+    state        TEXT    NOT NULL DEFAULT 'pending',
+    attempts     INTEGER NOT NULL DEFAULT 0,
+    error        TEXT    NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL DEFAULT 0,
+    updated_at   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_media_raw_state
+    ON media_raw(state, created_at);
 """
 
 

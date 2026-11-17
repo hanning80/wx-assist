@@ -807,20 +807,28 @@ class WeChatDbReader:
         if not session_id and not svr_id:
             return {"success": False, "error": "缺少会话 ID 与 svr_id"}
 
-        for src in voice_dbs:
-            conn = self._connect(src)
-            try:
-                # ① svr_id 最可靠（全局唯一）
-                if svr_id:
+        # ① svr_id 最可靠（全局唯一），必须先在所有语音库里查完再兜底。
+        # 不能在一个库里用 local_id 命中就返回：VoiceInfo 按会话分库，
+        # 同一个 local_id 可能在不同库里各有一条，先命中的可能是旧语音。
+        if svr_id:
+            for src in voice_dbs:
+                conn = self._connect(src)
+                try:
                     rows = conn.execute(
                         "SELECT voice_data FROM VoiceInfo WHERE svr_id=? LIMIT 1",
                         (_to_int(svr_id),),
                     ).fetchall()
                     if rows and rows[0][0]:
                         return {"success": True, "hex": bytes(rows[0][0]).hex()}
+                except sqlite3.Error as exc:
+                    logger.debug("读取 %s 的 VoiceInfo 失败: %s", src.name, exc)
+                    continue
 
-                # ② 退而用会话 + local_id / create_time
-                if session_id:
+        # ② 没有 svr_id 或找不到时，才退而用会话 + local_id / create_time。
+        if session_id:
+            for src in voice_dbs:
+                conn = self._connect(src)
+                try:
                     id_rows = conn.execute(
                         "SELECT rowid FROM Name2Id WHERE user_name=? LIMIT 1",
                         (session_id,),
@@ -845,9 +853,9 @@ class WeChatDbReader:
                         ).fetchall()
                     if rows and rows[0][0]:
                         return {"success": True, "hex": bytes(rows[0][0]).hex()}
-            except sqlite3.Error as exc:
-                logger.debug("读取 %s 的 VoiceInfo 失败: %s", src.name, exc)
-                continue
+                except sqlite3.Error as exc:
+                    logger.debug("读取 %s 的 VoiceInfo 失败: %s", src.name, exc)
+                    continue
 
         return {"success": False, "error": "未找到该语音消息"}
 
@@ -949,6 +957,58 @@ class WeChatDbReader:
                 return str(candidate)
         # 文件不存在也返回推算路径，交由调用方处理
         return str(candidates[0])
+
+    def resolve_video_hardlink(self, md5: str, account_dir: str = "",
+                               raw: bool = False) -> str:
+        """由视频消息 md5 / rawmd5 定位本地 mp4。
+
+        微信 4.x 的视频缓存文件名也不等于消息 XML 里的 md5：
+        消息 md5 可能是 ``30e67…``，实际文件是 ``3a6bcffc….mp4``。
+        ``video_hardlink_info_v4`` 保存了这层映射：
+        ``dir1`` 是月份目录（如 2026-08），``dir2`` 通常为 0；
+        本地布局为 ``<account>/msg/video/<dir1>/<file_name>``。
+        """
+        if not md5:
+            return ""
+        src = self._hardlink_db()
+        if src is None:
+            return ""
+        try:
+            conn = self._connect(src)
+            row = conn.execute(
+                "SELECT dir1, dir2, file_name FROM video_hardlink_info_v4 "
+                "WHERE md5=? LIMIT 1",
+                (md5,),
+            ).fetchone()
+            if row is None:
+                return ""
+            dir1 = self._dir_name(conn, row["dir1"])
+            dir2 = self._dir_name(conn, row["dir2"])
+            file_name = str(row["file_name"] or "")
+        except sqlite3.Error as exc:
+            logger.debug("解析视频 hardlink 失败: %s", exc)
+            return ""
+
+        base = Path(account_dir) if account_dir else self._account_dir
+        video_root = base / "msg" / "video"
+        candidates = []
+        if dir1:
+            candidates.append(video_root / dir1 / file_name)
+        if dir2 and dir2 not in ("0", dir1):
+            candidates.append(video_root / dir2 / file_name)
+        candidates.append(video_root / file_name)
+        # raw 版本是同一视频的高码率原片；调用方要原片时优先 raw
+        if raw and not file_name.endswith("_raw.mp4"):
+            stem = file_name[:-4] if file_name.lower().endswith(".mp4") else file_name
+            raw_name = f"{stem}_raw.mp4"
+            if dir1:
+                candidates.insert(0, video_root / dir1 / raw_name)
+            candidates.insert(0, video_root / raw_name)
+
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return str(candidates[0]) if candidates else ""
 
     def _dir_name(self, conn: sqlite3.Connection, dir_id) -> str:
         """把 ``dir1``/``dir2`` 的数字 id 还原成目录名。"""

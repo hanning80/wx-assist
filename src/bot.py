@@ -840,10 +840,30 @@ class Bot:
         # ── 7d. Register router.handle as iLink callback ────────────
         try:
             from .web.server import register_ilink_callback
-            register_ilink_callback(router.handle)
-            logger.info("iLink callback registered (router.handle)")
+
+            def _ilink_entry(msg):
+                """助手号的消息先让日记看一眼（建提醒 / 回时刻 / 说停），不是它的再交给路由。"""
+                try:
+                    from src.journal.worker import handle_ilink_message
+                    if handle_ilink_message(msg):
+                        return None
+                except Exception as e:
+                    logger.debug("journal ilink hook skipped: %s", e)
+                return router.handle(msg)
+
+            register_ilink_callback(_ilink_entry)
+            logger.info("iLink callback registered (journal + router.handle)")
         except Exception as e:
             logger.debug("iLink callback not registered: %s", e)
+
+        # ── 7d2. 日记功能：常驻线程（入口=文件传输助手，回执=助手号）──
+        try:
+            if os.getenv("JOURNAL_ENABLED", "true").strip().lower() != "false":
+                from src.journal.worker import start_worker
+                if start_worker():
+                    logger.info("日记功能已启动：入口=文件传输助手，回执=助手号会话")
+        except Exception as e:
+            logger.warning("日记功能启动失败: %s", e)
 
         # ── 7e. Auto-start WeChat iLink receiver if account was bound ──
         try:
@@ -986,6 +1006,11 @@ class Bot:
             try:
                 from .web.server import _stop_ilink_receiver
                 _stop_ilink_receiver()
+            except Exception:
+                pass
+            try:
+                from src.journal.worker import stop_worker
+                stop_worker()
             except Exception:
                 pass
             if self._conn is not None:

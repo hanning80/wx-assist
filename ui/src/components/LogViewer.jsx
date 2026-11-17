@@ -776,7 +776,7 @@ export default function LogViewer() {
       </div>
 
       <motion.div
-        initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+        initial={{ opacity: 1 }} animate={{ opacity: 1 }}
         ref={scrollRef}
         onScroll={handleScroll}
         className="bg-bg-inset border border-border-main rounded-2xl overflow-hidden max-h-[600px] overflow-y-auto font-mono text-[13px] leading-relaxed p-4 divide-y divide-border-main shadow-sm text-text-main"
@@ -823,7 +823,7 @@ export default function LogViewer() {
             return (
               <motion.div
                 key={i}
-                initial={{ opacity: 0, x: -4 }}
+                initial={{ opacity: 1, x: -4 }}
                 animate={{ opacity: 1, x: 0 }}
                 transition={{ delay: Math.min(i * 0.003, 0.2) }}
                 className="flex items-center gap-4 px-4 py-2 hover:bg-bg-main/50 dark:hover:bg-white/5 transition-colors border-0"

@@ -26,6 +26,29 @@ class MessageStore:
 
     # ── Write operations ──────────────────────────────────────────
 
+    def save_media_raw(self, message_id: str, chat_id: str, local_id: int | None,
+                       server_id: int | None, msg_type: int, msg_time: int,
+                       raw_content: str) -> bool:
+        """旁路保存图片/视频原始 XML；不改 messages.content 的清洗口径。"""
+        if not raw_content:
+            return False
+        now = int(time.time())
+        with self._write_lock:
+            try:
+                self.conn.execute(
+                    """INSERT OR IGNORE INTO media_raw
+                       (message_id, chat_id, local_id, server_id, msg_type,
+                        msg_time, raw_content, state, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)""",
+                    (str(message_id), str(chat_id), local_id, server_id,
+                     int(msg_type), int(msg_time), str(raw_content)[:20000], now, now),
+                )
+                self.conn.commit()
+                return True
+            except Exception:
+                logger.exception("保存媒体原始 XML 失败: %s", message_id)
+                return False
+
     def insert_message(self, msg: dict) -> bool:
         """Insert a message and update the user's last-message cursor.
 

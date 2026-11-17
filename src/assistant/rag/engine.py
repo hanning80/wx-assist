@@ -36,8 +36,8 @@ DEFAULT_TOP_K = 20       # 粗搜条数
 DEFAULT_FINAL_K = 5      # 最终返回条数
 DEFAULT_SCORE_THRESHOLD = 0.4  # 相似度阈值
 COLD_START_BATCH = 1000  # 冷启动每批处理条数
-COLD_START_DAYS = 30     # 冷启动回溯天数
-MAX_CHUNK_AGE_DAYS = 60  # chunk 最大存活天数，超过的被 compress 清理
+COLD_START_DAYS = 0      # 0 = 全量历史；用户要“所有聊天都能被检索”
+MAX_CHUNK_AGE_DAYS = 0   # 0 表示不按时间清库；日记/聊天是长期知识，不能到期删掉
 STATE_FILE = "data/rag_state.json"  # 索引进度持久化
 
 
@@ -103,9 +103,11 @@ class RAGEngine:
     def compress(self, max_age_days: int = MAX_CHUNK_AGE_DAYS):
         """删除超过 max_age_days 的旧 chunk，控制 ChromaDB 大小。
 
-        由 DigestScheduler 定期调用，或启动时调一次。
-        ChromaDB 只存最近 N 天的向量，防止无限膨胀到 GB 级。
+        max_age_days <= 0 表示不清理。日记、附件和聊天都是用户要长期
+        检索的知识，不能按 60 天到期删掉；需要清库时显式传正数。
         """
+        if not max_age_days or int(max_age_days) <= 0:
+            return 0
         try:
             cutoff = int((datetime.now() - timedelta(days=max_age_days)).timestamp())
             deleted = self._store.delete_older_than(cutoff)
@@ -201,8 +203,42 @@ class RAGEngine:
                 return
             emb = self._embedder.encode([chunk.content])
             self._store.add([chunk], emb)
+            # 实时增量也要推进游标，否则重启冷启动会从旧位置重扫，
+            # 容易把已索引的消息再补一遍。
+            msg_id = int(msg.get("rowid") or msg.get("id") or 0)
+            if msg_id > int(self._last_indexed_ids.get(chat_id, 0)):
+                self._last_indexed_ids[chat_id] = msg_id
+                self._save_state()
         except Exception as e:
             logger.warning("[RAG] ingest_one 失败: %s", e)
+
+    def reindex_message(self, msg: dict, source: str = "msg"):
+        """语音占位改成文字后，删掉旧块，再用单条块补进索引。
+
+        普通滑动窗口块的下一条消息不好预测，不能只改数据库就假装索引也变了；
+        这里用单条块保证这段文字可被检索，最多多一条上下文，不会丢原话。
+        """
+        content = (msg.get("content") or "").strip()
+        if not self._is_readable_content(content):
+            return False
+        sid = str(msg.get("message_id") or msg.get("id") or "").strip()
+        if not sid:
+            return False
+        try:
+            self._store.delete_by_source(source, [sid])
+            from .chunking import SingleItemChunker
+            item = dict(msg)
+            item["id"] = sid
+            chunk = SingleItemChunker().chunk_one(item, source, [])
+            if chunk is None:
+                return False
+            emb = self._embedder.encode([chunk.content])
+            self._store.add([chunk], emb)
+            logger.info("[RAG] 已重建语音文字索引 %s", sid[:12])
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[RAG] reindex_message 失败 %s: %s", sid[:12], e)
+            return False
 
     # ── 检索 ──────────────────────────────────────────────────────
 
@@ -305,9 +341,12 @@ class RAGEngine:
                     rag_status.update(phase="ready")
                 return True
 
-            # created_at 是 UNIX 时间戳（秒）
-            window_days = int(days) if days else COLD_START_DAYS
-            cutoff_ts = int((datetime.now() - timedelta(days=window_days)).timestamp())
+            # created_at 是 UNIX 时间戳（秒）；0 表示不截断，索引全部历史。
+            window_days = int(days) if days is not None else COLD_START_DAYS
+            cutoff_ts = (
+                int((datetime.now() - timedelta(days=window_days)).timestamp())
+                if window_days and window_days > 0 else 0
+            )
             batch_size = COLD_START_BATCH
             total = 0
             cursor = db_conn.cursor()

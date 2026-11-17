@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Star, DownloadSimple, MagnifyingGlass, Clock, File, Image, Video, Link, FileText, Funnel, ArrowsDownUp, FolderOpen, Play, Pause, Microphone, ChatsCircle, CaretDown, ChatCircleDots, Tag } from '@phosphor-icons/react'
 import { Toggle, SectionHeader, API_BASE, getWsUrl } from './SharedComponents'
@@ -13,10 +13,13 @@ const FAV_TYPE_LABELS = {
   3: '语音',
   4: '视频',
   5: '链接',
+  6: '位置',
   8: '文件',
   14: '聊天',
   16: '位置',
   17: '联系人',
+  18: '笔记',
+  20: '视频号',
   33: '文章',
 }
 
@@ -129,10 +132,13 @@ function FavTypeIcon({ type }) {
     3: Microphone,
     4: Video,
     5: Link,
+    6: Link,
     8: File,
     14: ChatsCircle,
-    16: FileText,
+    16: Link,
     17: FileText,
+    18: FileText,
+    20: Video,
     33: FileText,
   }
   const Icon = iconMap[type] || File
@@ -278,6 +284,7 @@ function FavCard({ item }) {
   const [expanded, setExpanded] = useState(false)
   const [viewImage, setViewImage] = useState(null)  // For standalone image items
   const [chatZoom, setChatZoom] = useState(null)    // For chat record images: record index or 'nested-${ri}-${si}'
+  const [videoError, setVideoError] = useState(false)
   const typeLabel = FAV_TYPE_LABELS[item.type] || '未知'
   // Defensive: ensure create_time is a valid number before calling toLocaleString
   const createTime = item.create_time != null ? Number(item.create_time) : 0
@@ -285,9 +292,12 @@ function FavCard({ item }) {
 
   // Check if it's a link type and has link data
   const isLink = item.type === 5
+  // 微信的“位置”有 6 和 16 两种 localType；只认 6 会把 16 的位置当成空白。
+  const isLocation = item.type === 6 || item.type === 16
   const isVoice = item.type === 3
   const isImage = item.type === 2
-  const isVideo = item.type === 4
+  const isVideoAccount = item.type === 20
+  const isVideo = item.type === 4 || isVideoAccount || item.videos?.length > 0
   const isChatRecord = item.type === 14 && item.chat_records?.length > 0
 
   // Build image URL — use local cache decryption for protobuf URLs, CDN proxy for moments
@@ -297,11 +307,15 @@ function FavCard({ item }) {
     if (img?.url) {
       // Protobuf-encoded CDN URLs (start with 305/306/307) — use local V2 cache decryption
       if (img.url.startsWith('305') || img.url.startsWith('306') || img.url.startsWith('307')) {
-        return `${API_BASE}/api/fav/image?id=${itemId}&size=${sizeParam}`
+        // 缩略图只要 id+size，不要把几十 MB 的原图参数一起带上，否则服务端按原图
+        // 找文件会 404，视频封面就只剩一个破图标。
+        const extra = thumb ? '' : `${img.fullmd5 ? `&fullmd5=${encodeURIComponent(img.fullmd5)}` : ''}${img.fullsize ? `&fullsize=${img.fullsize}` : ''}`
+        return `${API_BASE}/api/fav/image?id=${itemId}&size=${sizeParam}${extra}`
       }
       // Explicit v2_cache marker (from our API fix)
       if (img.key === 'v2_cache') {
-        return `${API_BASE}/api/fav/image?id=${itemId}&size=${sizeParam}`
+        const extra = thumb ? '' : `${img.fullmd5 ? `&fullmd5=${encodeURIComponent(img.fullmd5)}` : ''}${img.fullsize ? `&fullsize=${img.fullsize}` : ''}`
+        return `${API_BASE}/api/fav/image?id=${itemId}&size=${sizeParam}${extra}`
       }
       const key = img.key || 0
       if (key && String(key) !== '0') {
@@ -314,6 +328,16 @@ function FavCard({ item }) {
     // Case 2: No img provided but this is a type 2 image item — try local V2 cache
     return `${API_BASE}/api/fav/image?id=${itemId}&size=${sizeParam}`
   }
+
+  // 视频号视频由服务端代理取流；普通视频（type=4）没有原片地址时只保留封面，
+  // 不能把封面图塞进 <video>，否则浏览器一定报“视频加载失败”。
+  const video = item.videos?.[0] || null
+  const videoSrc = video?.url
+    ? `${API_BASE}/api/fav/video?id=${item.id}&index=0`
+    : null
+  const videoPoster = video?.thumb_url
+    || video?.cover_url
+    || (item.images?.[0] ? buildImageUrl(item.images[0], item.id, true) : undefined)
 
   // Parse voice duration from chat_records (API returns duration in ms)
   const voiceDuration = (() => {
@@ -334,7 +358,7 @@ function FavCard({ item }) {
         {(isImage || isVideo) ? (
           <div className="w-8 h-8 rounded-lg overflow-hidden shrink-0 bg-bg-raised border border-border-main relative">
             <img
-              src={buildImageUrl(item.images?.[0] || null, item.id, true)}
+              src={isVideo && videoPoster ? videoPoster : buildImageUrl(item.images?.[0] || null, item.id, true)}
               alt=""
               className="w-full h-full object-cover"
               onError={(e) => { e.target.style.display = 'none'; e.target.parentElement.innerHTML = '<div class="w-full h-full flex items-center justify-center text-text-muted"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" opacity="0.5"><path d="M216 40H40a16 16 0 0 0-16 16v144a16 16 0 0 0 16 16h176a16 16 0 0 0 16-16V56a16 16 0 0 0-16-16Z"/></svg></div>' }}
@@ -381,14 +405,24 @@ function FavCard({ item }) {
               {item.content.slice(0, 60)}...
             </p>
           ) : null}
+          {isLocation && (
+            <p className="text-xs text-text-muted mt-1 truncate">
+              位置：{[item.title, item.content].filter(Boolean).join(' · ') || '微信里只存了位置标签'}
+            </p>
+          )}
+          {isVideoAccount && !video && (
+            <p className="text-xs text-text-muted mt-1">
+              视频号原片链接未保存；点开可看封面和文案，原片请在微信里打开
+            </p>
+          )}
         </div>
         <div className="text-sm text-text-muted font-mono">
           {timeStr}
         </div>
       </div>
 
-      {/* Link preview for link type */}
-      {expanded && isLink && item.link && (
+      {/* Link preview for link / location type */}
+      {expanded && (isLink || isLocation) && item.link && (
         <div className="px-4 pb-2">
           <a
             href={item.link}
@@ -398,7 +432,9 @@ function FavCard({ item }) {
             className="flex items-center gap-2 p-2 rounded-lg bg-bg-raised border border-border-main hover:border-brand-green/30 transition-colors"
           >
             <Link size={14} className="text-brand-green" />
-            <span className="text-xs text-brand-green truncate flex-1">{item.link}</span>
+            <span className="text-xs text-brand-green truncate flex-1">
+              {isLocation ? '在高德地图查看这个位置' : item.link}
+            </span>
           </a>
         </div>
       )}
@@ -437,23 +473,27 @@ function FavCard({ item }) {
       {expanded && isVideo && (
         <div className="px-4 pb-2" onClick={(e) => e.stopPropagation()}>
           <div className="rounded-lg overflow-hidden border border-border-main bg-bg-raised relative group">
-            <video
-              src={buildImageUrl(item.images?.[0] || null, item.id)}
-              poster={item.images?.[0] ? buildImageUrl(item.images[0], item.id, true) : undefined}
-              className="w-full max-h-80 object-contain"
-              controls
-              preload="metadata"
-              onError={(e) => {
-                e.target.style.display = 'none'
-                const parent = e.target.parentElement
-                if (parent && !parent.querySelector('.vid-fallback')) {
-                  const fallback = document.createElement('div')
-                  fallback.className = 'vid-fallback flex flex-col items-center justify-center p-8 text-text-muted'
-                  fallback.innerHTML = '<span class="text-xs opacity-70">视频加载失败</span>'
-                  parent.appendChild(fallback)
-                }
-              }}
-            />
+            {videoSrc && !videoError ? (
+              <video
+                src={videoSrc}
+                poster={videoPoster}
+                className="w-full max-h-80 object-contain"
+                controls
+                preload="metadata"
+                onError={() => setVideoError(true)}
+              />
+            ) : (
+              <div className="flex flex-col items-center justify-center p-8 text-text-muted">
+                {videoPoster && (
+                  <img src={videoPoster} alt="视频封面" className="max-h-60 object-contain mb-2" />
+                )}
+                <span className="text-xs opacity-70">
+                  {item.type === 20
+                    ? '视频号的原始播放链接已过期，封面和文字已保留；要看原片请在微信里打开'
+                    : '这条收藏只保存了视频封面，原视频没有可播放地址；请在微信收藏里打开'}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -557,6 +597,31 @@ function FavCard({ item }) {
         </div>
       )}
 
+      {/* 视频号文案：原片过期后至少把标题/文案完整留在页面上 */}
+      {expanded && isVideoAccount && item.content && (
+        <div className="px-4 pb-3" onClick={(e) => e.stopPropagation()}>
+          <div className="pt-2 border-t border-border-main">
+            <p className="text-xs text-text-muted whitespace-pre-wrap leading-relaxed">
+              {item.content}
+            </p>
+            {item.videos?.[0]?.nickname && (
+              <p className="text-[11px] text-text-muted/70 mt-1">来源：{item.videos[0].nickname}</p>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 位置完整地址：不只显示一个标签名 */}
+      {expanded && isLocation && (
+        <div className="px-4 pb-3" onClick={(e) => e.stopPropagation()}>
+          <div className="pt-2 border-t border-border-main text-xs text-text-muted">
+            <div>位置：{item.title || '未命名位置'}</div>
+            {item.content && item.content !== item.title && <div className="mt-0.5">地址：{item.content}</div>}
+            {item.from_user && <div className="mt-0.5">来自：{item.from_user}</div>}
+          </div>
+        </div>
+      )}
+
       <AnimatePresence>
         {expanded && item.content && !isLink && !isImage && !isVideo && !isVoice && !isChatRecord && (
           <motion.div
@@ -614,6 +679,7 @@ export default function FavoritesTab() {
   const [aiChatFavTypes, setAiChatFavTypes] = useState([1, 14, 5, 33])  // default: text, chat, link, article
   const [tags, setTags] = useState([])            // [{id, name, fav_count}]
   const [tagFilter, setTagFilter] = useState('')   // 选中的 tag id
+  const [tagLoading, setTagLoading] = useState(false)
   const [typeDropdownOpen, setTypeDropdownOpen] = useState(false)
   const [dateDropdownOpen, setDateDropdownOpen] = useState(false)
   const typeDropdownRef = useRef(null)
@@ -710,6 +776,60 @@ export default function FavoritesTab() {
     } finally {
       setLoading(false)
       setLoadingMoreFav(false)
+    }
+  }
+
+  async function pickTag(tag) {
+    if (!tag) return
+    // 再点一次同一个标签 = 取消筛选
+    if (tagFilter === tag.id) {
+      setTagFilter('')
+      return
+    }
+    setTagFilter(tag.id)
+
+    // 初始只加载了前 50 条。旧收藏可能不在第一页，点到标签就会“有数量但没内容”。
+    // 这里按标签的 fav_ids 补齐，直到目标条目出现为止。
+    const wanted = new Set((tag.fav_ids || []).map(String))
+    const alreadyLoaded = favorites.some(item =>
+      (item.tags || []).some(t => String(t.id) === String(tag.id))
+    )
+    if (alreadyLoaded) return
+
+    setTagLoading(true)
+    setError('')
+    try {
+      let all = [...favorites]
+      let offset = 0
+      let more = true
+      while (more && all.length < 3000) {
+        const res = await fetch(`${API_BASE}/api/fav/list?limit=200&offset=${offset}`)
+        const data = await res.json()
+        if (!data.ok) {
+          setError(data.error || '加载标签内容失败')
+          break
+        }
+        const items = data.data || []
+        const seen = new Set(all.map(x => String(x.id)))
+        for (const item of items) {
+          const key = String(item.id)
+          if (!seen.has(key)) {
+            seen.add(key)
+            all.push(item)
+          }
+        }
+        offset += items.length
+        more = items.length >= 200
+        if (items.length === 0) break
+        if (wanted.size && [...wanted].every(id => all.some(x => String(x.id) === id))) break
+      }
+      setFavorites(all)
+      setFavOffset(all.length)
+      setHasMoreFav(more)
+    } catch (e) {
+      setError('无法加载这个标签下的收藏')
+    } finally {
+      setTagLoading(false)
     }
   }
 
@@ -870,7 +990,7 @@ export default function FavoritesTab() {
     // Tag filter
     if (tagFilter) {
       result = result.filter(item =>
-        item.tags?.some(t => t.id === tagFilter)
+        item.tags?.some(t => String(t.id) === String(tagFilter))
       )
     }
 
@@ -911,13 +1031,17 @@ export default function FavoritesTab() {
     { value: '3', label: '语音' },
     { value: '4', label: '视频' },
     { value: '5', label: '链接' },
+    { value: '6', label: '位置' },
+    { value: '16', label: '位置（新版）' },
     { value: '8', label: '文件' },
     { value: '14', label: '聊天' },
+    { value: '18', label: '笔记' },
+    { value: '20', label: '视频号' },
     { value: '33', label: '文章' },
   ]
 
   return (
-    <motion.div initial={{ opacity: 0, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}>
+    <motion.div initial={{ opacity: 1, x: 12 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -12 }}>
       <SectionHeader
         title="收藏管理"
         icon={Star}
@@ -961,7 +1085,7 @@ export default function FavoritesTab() {
 
       {exportStatus && exportStatus !== 'starting' && (
         <motion.div
-          initial={{ opacity: 0, y: -8 }}
+          initial={{ opacity: 1, y: -8 }}
           animate={{ opacity: 1, y: 0 }}
           className={`mb-4 p-3 rounded-xl border text-xs font-medium flex items-center gap-2
             ${exportStatus === 'completed'
@@ -1027,13 +1151,14 @@ export default function FavoritesTab() {
           {tags.map(tag => (
             <button
               key={tag.id}
-              onClick={() => setTagFilter(tag.id === tagFilter ? '' : tag.id)}
+              onClick={() => pickTag(tag)}
               className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all cursor-pointer
                 ${tagFilter === tag.id ? 'bg-brand-green-hover text-white border-brand-green' : 'bg-bg-raised border-border-main text-text-muted hover:text-text-main'}`}
             >
               {tag.name} ({tag.fav_count})
             </button>
           ))}
+          {tagLoading && <span className="text-xs text-text-muted">正在补齐这个标签下的收藏…</span>}
         </div>
       )}
 
@@ -1057,7 +1182,7 @@ export default function FavoritesTab() {
                 <AnimatePresence>
                   {typeDropdownOpen && (
                     <motion.div
-                      initial={{ opacity: 0, y: -4 }}
+                      initial={{ opacity: 1, y: -4 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -4 }}
                       className="absolute z-50 mt-1 left-0 w-36 bg-bg-card border border-border-main rounded-xl shadow-lg overflow-hidden"
@@ -1084,7 +1209,7 @@ export default function FavoritesTab() {
                 <AnimatePresence>
                   {dateDropdownOpen && (
                     <motion.div
-                      initial={{ opacity: 0, y: -4 }}
+                      initial={{ opacity: 1, y: -4 }}
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -4 }}
                       className="absolute z-50 mt-1 left-0 w-36 bg-bg-card border border-border-main rounded-xl shadow-lg overflow-hidden"

@@ -152,6 +152,8 @@ python desktop.py
 > 源码模式下 RAG 功能自动可用（需已安装 fastembed + chromadb）。如果 pip 未安装 RAG 依赖，应用自动降级，仅语义搜索不可用。
 **本地构建 EXE**
 
+打包前先把 `ffmpeg.exe` 放到 `tools/ffmpeg/ffmpeg.exe`（微信新版 HEVC 图片转码需要，约 212MB）；两个 spec 都会把它打进 `tools/ffmpeg`，缺失会直接报错，避免生成 exe 后运行才发现。
+
 完整版（含 RAG）：
 ```powershell
 pyinstaller build_rag.spec --noconfirm

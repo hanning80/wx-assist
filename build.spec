@@ -89,12 +89,21 @@ if not _webview_runtime.exists():
 if not _webview_interop.exists():
     raise FileNotFoundError(f"WebBrowserInterop.x64.dll not found at {_webview_interop}")
 
+# 微信新版图片是 wxgf/HEVC 容器，exe 不能依赖用户电脑的 PATH，固定随包带一份。
+_ffmpeg = PROJECT_ROOT / 'tools' / 'ffmpeg' / 'ffmpeg.exe'
+if not _ffmpeg.exists():
+    raise FileNotFoundError(
+        f"ffmpeg.exe not found at {_ffmpeg}; 请先放入 tools/ffmpeg/ 再打包"
+    )
+
 a = Analysis(
     ['desktop.py'],
     pathex=[str(PROJECT_ROOT)],
     binaries=[
         (str(_webview_runtime), './runtimes/win-x64/native'),
         (str(_webview_interop), './lib'),
+        # 微信 wxgf/HEVC 图片转普通 PNG 需要 ffmpeg；约 212MB
+        (str(_ffmpeg), 'tools/ffmpeg'),
         # 注意：不再打包 wcdb_api.dll / WCDB.dll / SDL2.dll。
         # 数据库读取已改为纯 Python（PBKDF2 + AES-CBC 分页解密 + sqlite3），
         # 见 src/wechat/db_crypto.py 与 src/wechat/db_reader.py。
@@ -207,7 +216,7 @@ exe = EXE(
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    upx_exclude=['ffmpeg.exe'],
     runtime_tmpdir=None,
     console=False,
     disable_windowed_traceback=False,
