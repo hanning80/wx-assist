@@ -93,8 +93,11 @@ class FastEmbedder(Embedder):
         if fallback.exists():
             return str(fallback)
 
-        # 默认让 fastembed 用自己的缓存
-        return str(Path.home() / ".cache" / "fastembed")
+        # 兜底：不再回落到 C 盘用户目录（.cache/fastembed），统一放在程序目录旁，
+        # 保证依赖库自己下载的模型也只落在 F 盘系统目录内。
+        program_cache = base / ".cache" / "fastembed"
+        logger.info("[RAG] 未找到 models 目录，将使用 %s 作为模型缓存", program_cache)
+        return str(program_cache)
 
     def warmup(self):
         if self._model is not None:
